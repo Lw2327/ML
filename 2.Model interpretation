@@ -1,0 +1,814 @@
+## SHAP
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import Rectangle
+import seaborn as sns
+from sklearn.inspection import partial_dependence
+import shap
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# 设置全局字体参数 - 使用Times New Roman
+plt.rcParams.update(plt.rcParamsDefault)
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['text.usetex'] = False
+# 关键修改：使用 stix 字体族，它与 Times New Roman 兼容且对下标支持更好
+plt.rcParams['mathtext.fontset'] = 'stix'
+plt.rcParams['mathtext.default'] = 'bf'  # 数学字体加粗
+plt.rcParams['font.weight'] = 'bold'  # 全局加粗
+plt.rcParams['axes.labelweight'] = 'bold'
+plt.rcParams['axes.titleweight'] = 'bold'
+
+# 高质量图片输出设置
+plt.rcParams['figure.dpi'] = 300
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['savefig.bbox'] = 'tight'
+plt.rcParams['savefig.pad_inches'] = 0.05
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+
+# 创建保存目录
+explanation_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\3.最优机器学习模型解释图"
+os.makedirs(explanation_dir, exist_ok=True)
+
+# 显示字典 - 特征名称映射（使用Times New Roman字体，所有字符加粗）
+# 使用 stix 字体族后，下标可以正常放大
+display_dict = { 
+    'M1': r'M$\mathbf{_1}$', 'M2': r'M$\mathbf{_2}$', 
+    'M3': r'M$\mathbf{_3}$', 'M4': r'M$\mathbf{_4}$',
+    'M5': r'M$\mathbf{_5}$', 'M6': r'M$\mathbf{_6}$', 
+    'CT': 'CT', 'Tc': 'Tc', 'Ps': 'Ps', 'Pv': 'Pv',
+    'BET': 'BET', 'Cu/Fe': 'Cu/Fe', 'RT': 'RT', 'Tr': 'Tr', 
+    'CuFeOx ': r'CuFeO$\mathbf{_x}$ ',
+    'FexC': r'Fe$\mathbf{_x}$C', 
+    'Ef': r'E$\mathbf{_f}$', 
+    'H2/CO': r'H$\mathbf{_2}$/CO',
+    'T': 'T', 'TOS': 'TOS', 'P': 'P', 'GHSV': 'GHSV ', 
+    'χS': r'$\boldsymbol{\chi}$$\mathbf{_S}$',
+    'AOS': 'AOS',
+    'χP': r'$\boldsymbol{\chi}$$\mathbf{_P}$',
+    'SC6+OH': r'S$\mathbf{_{C6+OH}}$'
+}
+
+# 定义特征分类
+catalyst_descriptors = ['M1','M2','M3','M4','M5','M6','Ps','Pv','BET','Cu/Fe','CuFeOx ','FexC','Ef','χS','AOS','χP']
+preparation_params = ['CT','Tc','RT','Tr']
+reaction_conditions = ['H2/CO','T','TOS','P','GHSV']
+
+all_features = catalyst_descriptors + preparation_params + reaction_conditions
+print(f"总特征数: {len(all_features)}")
+print(f"催化剂描述符: {len(catalyst_descriptors)}个")
+print(f"制备参数: {len(preparation_params)}个")
+print(f"反应条件: {len(reaction_conditions)}个")
+
+print("="*60)
+print("开始生成XGBoost模型SHAP解释图表")
+print("="*60)
+
+# 1. SHAP分析
+print("\n[1/4] 正在进行SHAP分析...")
+
+explainer = shap.TreeExplainer(best_xgb)
+shap_values = explainer.shap_values(X_train)
+
+feature_display_names = [display_dict.get(col, col) for col in X_train.columns]
+
+shap_sum = np.abs(shap_values).mean(axis=0)
+importance_df = pd.DataFrame({
+    'feature': feature_display_names,
+    'importance': shap_sum,
+    'original_name': X_train.columns
+}).sort_values('importance', ascending=False)
+
+def get_feature_category(original_name):
+    if original_name in catalyst_descriptors:
+        return 'Catalyst Descriptors'
+    elif original_name in preparation_params:
+        return 'Preparation Parameters'
+    elif original_name in reaction_conditions:
+        return 'Reaction Conditions'
+    else:
+        return 'Other'
+
+importance_df['category'] = importance_df['original_name'].apply(get_feature_category)
+
+top6_features = importance_df.head(6)
+top6_features_display = top6_features['feature'].values
+top6_features_original = top6_features['original_name'].values
+
+print("\nXGBoost模型SHAP前6个重要特征（按重要性降序）:")
+for i, (display_name, original_name, importance) in enumerate(zip(top6_features_display, top6_features_original, top6_features['importance'].values), 1):
+    print(f"  {i}. {display_name:30s} (原始名: {original_name:20s}, 重要性: {importance:.6f})")
+
+soft_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD']
+
+print("\n[2/4] 绘制SHAP特征重要性图（带两个嵌入式饼图）...")
+
+# 创建主图 - 高度与摘要图一致（9）
+fig, ax1 = plt.subplots(figsize=(12, 9))
+
+# 创建颜色映射
+colors = []
+for i, row in importance_df.iterrows():
+    if row['feature'] in top6_features_display:
+        idx = list(top6_features_display).index(row['feature'])
+        colors.append(soft_colors[idx])
+    else:
+        colors.append('#D3D3D3')
+
+# 条形图
+bars = ax1.barh(range(len(importance_df)), importance_df['importance'], 
+                color=colors, edgecolor='black', linewidth=0.8)
+
+# 设置坐标轴 - 使用Times New Roman
+ax1.set_yticks(range(len(importance_df)))
+ax1.set_yticklabels(importance_df['feature'], 
+                   fontsize=18, color='black', fontfamily='Times New Roman', fontweight='bold')
+ax1.tick_params(axis='x', labelsize=18, colors='black', width=1.5, length=6)
+ax1.tick_params(axis='y', width=1.5, length=6)
+ax1.set_xlabel('Mean |SHAP Value| (Average Impact on Model Output Magnitude)', 
+               fontsize=18, fontweight='bold', color='black', fontfamily='Times New Roman')
+ax1.grid(True, axis='x', alpha=0.3, linestyle='--', linewidth=0.5)
+
+# 设置坐标轴线宽
+for spine in ax1.spines.values():
+    spine.set_linewidth(1.5)
+
+ax1.invert_yaxis()
+
+# ==================== 饼图1：前6个特征的各自占比 + 其他特征 ====================
+pie1_ax = fig.add_axes([0.20, 0.27, 0.30, 0.30])
+
+top6_importance = top6_features['importance'].values
+other_importance = importance_df.iloc[6:]['importance'].sum()
+
+pie1_data = list(top6_importance) + [other_importance]
+pie1_labels = list(top6_features['feature'].values) + ['Other Features']
+pie1_colors = soft_colors[:6] + ['#D3D3D3']
+
+pie1_percentages = (np.array(pie1_data) / np.array(pie1_data).sum()) * 100
+
+pie1_labels_with_pct = []
+for label, pct in zip(pie1_labels, pie1_percentages):
+    if label == 'Other Features':
+        pie1_labels_with_pct.append(f'{label}\n({pct:.1f}%)')
+    else:
+        pie1_labels_with_pct.append(f'{label}\n({pct:.1f}%)')
+
+# 计算每个扇形的起始角度和结束角度
+startangle = 45
+angles = []
+current_angle = startangle
+for pct in pie1_percentages:
+    angle = pct / 100 * 360
+    angles.append((current_angle, current_angle + angle))
+    current_angle += angle
+
+# 绘制饼图，但不显示标签
+wedges1, texts1, autotexts1 = pie1_ax.pie(pie1_data, 
+                                           labels=[''] * len(pie1_data),
+                                           colors=pie1_colors,
+                                           autopct='',
+                                           startangle=startangle,
+                                           textprops={'fontsize': 18, 'color': 'black', 'fontfamily': 'Times New Roman', 
+                                                     'fontweight': 'bold'},
+                                           wedgeprops={'edgecolor': 'white', 'linewidth': 1.5})
+
+# 手动添加标签到扇形外侧中间位置
+label_distance = 1.25
+for i, (start_ang, end_ang) in enumerate(angles):
+    mid_angle_deg = (start_ang + end_ang) / 2
+    mid_angle_rad = np.radians(mid_angle_deg)
+    
+    x = label_distance * np.cos(mid_angle_rad)
+    y = label_distance * np.sin(mid_angle_rad)
+    
+    label_text = pie1_labels_with_pct[i]
+    
+    # 第5个特征（索引4）：标签放在引线终点的右下侧
+    if i == 4:
+        text = pie1_ax.text(x + 0.15, y - 0.15, label_text, 
+                            fontsize=18, color='black', 
+                            fontfamily='Times New Roman', fontweight='bold',
+                            ha='left', va='top')
+    # 第6个特征（索引5）：标签往外移动
+    elif i == 5:
+        if x > 0:
+            end_x = x + 0.5
+            end_y = y + 0.3
+        else:
+            end_x = x - 0.5
+            end_y = y + 0.3
+        text = pie1_ax.text(end_x, end_y, label_text, 
+                            fontsize=18, color='black', 
+                            fontfamily='Times New Roman', fontweight='bold',
+                            ha='center', va='bottom')
+    else:
+        text = pie1_ax.text(x, y, label_text, 
+                            fontsize=18, color='black', 
+                            fontfamily='Times New Roman', fontweight='bold',
+                            ha='center', va='center')
+    
+    # 第5个特征（索引4）：从扇形区域中间引出引线
+    if i == 4:
+        edge_distance = 0.85
+        edge_x = edge_distance * np.cos(mid_angle_rad)
+        edge_y = edge_distance * np.sin(mid_angle_rad)
+        
+        end_x = x + 0.15
+        end_y = y - 0.15
+        
+        line_x = [edge_x, end_x]
+        line_y = [edge_y, end_y]
+        pie1_ax.plot(line_x, line_y, color='black', linewidth=1.5, linestyle='-', alpha=0.7)
+        pie1_ax.plot(edge_x, edge_y, 'o', color='black', markersize=5)
+    
+    # 第6个特征（索引5）：45度斜向上引出
+    elif i == 5:
+        edge_distance = 0.85
+        edge_x = edge_distance * np.cos(mid_angle_rad)
+        edge_y = edge_distance * np.sin(mid_angle_rad)
+        
+        end_x = text.get_position()[0]
+        end_y = text.get_position()[1]
+        
+        mid_distance = 1.5
+        mid_x = mid_distance * np.cos(mid_angle_rad)
+        mid_y = mid_distance * np.sin(mid_angle_rad)
+        
+        line_x = [edge_x, mid_x]
+        line_y = [edge_y, mid_y]
+        pie1_ax.plot(line_x, line_y, color='black', linewidth=1.5, linestyle='-', alpha=0.7)
+        
+        dx = end_x - mid_x
+        dy = end_y - mid_y
+        scale_factor = 0.4
+        new_end_x = mid_x + dx * scale_factor
+        new_end_y = mid_y + dy * scale_factor
+        
+        text.set_position((new_end_x, new_end_y))
+        
+        line_x = [mid_x, new_end_x]
+        line_y = [mid_y, new_end_y]
+        pie1_ax.plot(line_x, line_y, color='black', linewidth=1.5, linestyle='-', alpha=0.7)
+        
+        pie1_ax.plot(edge_x, edge_y, 'o', color='black', markersize=5)
+
+pie1_ax.set_title('Feature Distribution (Top 6 + Others)', 
+                  fontsize=18, fontweight='bold', pad=21, fontfamily='Times New Roman')
+
+# ==================== 饼图2：三类特征的重要性占比 ====================
+pie2_ax = fig.add_axes([0.63, 0.27, 0.30, 0.30])
+
+catalyst_sum = importance_df[importance_df['category'] == 'Catalyst Descriptors']['importance'].sum()
+preparation_sum = importance_df[importance_df['category'] == 'Preparation Parameters']['importance'].sum()
+reaction_sum = importance_df[importance_df['category'] == 'Reaction Conditions']['importance'].sum()
+total_importance = catalyst_sum + preparation_sum + reaction_sum
+
+print(f"\n特征分类验证（SHAP）:")
+print(f"  催化剂描述符特征数: {len(importance_df[importance_df['category'] == 'Catalyst Descriptors'])}")
+print(f"  制备参数特征数: {len(importance_df[importance_df['category'] == 'Preparation Parameters'])}")
+print(f"  反应条件特征数: {len(importance_df[importance_df['category'] == 'Reaction Conditions'])}")
+print(f"  总特征数: {len(importance_df[importance_df['category'] != 'Other'])}")
+print(f"  三类重要性之和: {total_importance:.6f}")
+print(f"  所有特征重要性之和: {importance_df['importance'].sum():.6f}")
+
+pie2_data = [catalyst_sum, preparation_sum, reaction_sum]
+pie2_labels = ['Catalyst\nDescriptors', 'Preparation\nParameters', 'Reaction\nConditions']
+pie2_colors = ['#66B3FF', '#99FF99', '#FFCC99']
+
+pie2_percentages = (np.array(pie2_data) / total_importance) * 100
+pie2_labels_with_pct = [f'{label}\n({pct:.1f}%)' for label, pct in zip(pie2_labels, pie2_percentages)]
+
+wedges2, texts2, autotexts2 = pie2_ax.pie(pie2_data, 
+                                           labels=pie2_labels_with_pct,
+                                           colors=pie2_colors,
+                                           autopct='',
+                                           startangle=90,
+                                           textprops={'fontsize': 18, 'color': 'black', 'fontfamily': 'Times New Roman', 
+                                                     'fontweight': 'bold'},
+                                           wedgeprops={'edgecolor': 'white', 'linewidth': 1.5})
+
+for text in texts2:
+    text.set_fontfamily('Times New Roman')
+    text.set_fontweight('bold')
+
+pie2_ax.set_title('Feature Categories Distribution', 
+                  fontsize=18, fontweight='bold', pad=21, fontfamily='Times New Roman')
+
+plt.tight_layout()
+
+plt.savefig(os.path.join(explanation_dir, "XGBoost_SHAP_importance_with_embedded_pies.tiff"), 
+            format='tiff', dpi=600, bbox_inches='tight',
+            pil_kwargs={'compression': 'tiff_lzw'})
+plt.savefig(os.path.join(explanation_dir, "XGBoost_SHAP_importance_with_embedded_pies.pdf"), 
+            format='pdf', bbox_inches='tight')
+plt.show()
+print(f"  ✓ 已保存: XGBoost_SHAP_importance_with_embedded_pies.tiff 和 .pdf")
+
+print("\n[3/4] 绘制SHAP摘要图...")
+
+plt.figure(figsize=(12, 9))
+
+shap.summary_plot(shap_values, X_train, 
+                  feature_names=feature_display_names, 
+                  show=False,
+                  plot_size=(12, 9),
+                  max_display=25)
+
+fig = plt.gcf()
+ax = plt.gca()
+
+ax.tick_params(axis='y', labelsize=17, colors='black', width=1.5, length=6)
+ax.tick_params(axis='x', labelsize=17, colors='black', width=1.5, length=6)
+ax.set_xlabel(ax.get_xlabel(), fontsize=17, color='black', fontweight='bold', fontfamily='Times New Roman')
+
+for spine in ax.spines.values():
+    spine.set_linewidth(1.5)
+
+if len(fig.axes) > 1:
+    cbar = fig.axes[1]
+    cbar.tick_params(labelsize=17, colors='black', width=1.5, length=6)
+    cbar.set_ylabel('SHAP value', color='black', fontfamily='Times New Roman')
+    cbar.yaxis.label.set_size(17)
+    cbar.yaxis.label.set_fontweight('bold')
+    for spine in cbar.spines.values():
+        spine.set_linewidth(1.5)
+
+for text in ax.texts:
+    text.set_fontfamily('Times New Roman')
+    text.set_fontweight('bold')
+for label in ax.get_xticklabels() + ax.get_yticklabels():
+    label.set_fontfamily('Times New Roman')
+    label.set_color('black')
+    label.set_fontweight('bold')
+
+plt.tight_layout()
+
+plt.savefig(os.path.join(explanation_dir, "XGBoost_SHAP_summary.tiff"), 
+            format='tiff', dpi=600, bbox_inches='tight',
+            pil_kwargs={'compression': 'tiff_lzw'})
+plt.savefig(os.path.join(explanation_dir, "XGBoost_SHAP_summary.pdf"), 
+            format='pdf', bbox_inches='tight')
+plt.show()
+print(f"  ✓ 已保存: XGBoost_SHAP_summary.tiff 和 .pdf")
+
+print("\n[4/4] 绘制完成")
+
+print("\n" + "="*60)
+print("特征分类统计信息（基于SHAP）")
+print("="*60)
+
+catalyst_features = importance_df[importance_df['category'] == 'Catalyst Descriptors']
+preparation_features = importance_df[importance_df['category'] == 'Preparation Parameters']
+reaction_features = importance_df[importance_df['category'] == 'Reaction Conditions']
+
+print(f"\nCatalyst Descriptors (催化剂描述符): 总重要性 = {catalyst_sum:.6f} ({catalyst_sum/total_importance*100:.1f}%)")
+print(f"  包含特征数: {len(catalyst_features)}")
+for _, row in catalyst_features.iterrows():
+    print(f"  - {row['feature']}: {row['importance']:.6f} ({row['importance']/total_importance*100:.2f}%)")
+
+print(f"\nPreparation Parameters (制备参数): 总重要性 = {preparation_sum:.6f} ({preparation_sum/total_importance*100:.1f}%)")
+print(f"  包含特征数: {len(preparation_features)}")
+for _, row in preparation_features.iterrows():
+    print(f"  - {row['feature']}: {row['importance']:.6f} ({row['importance']/total_importance*100:.2f}%)")
+
+print(f"\nReaction Conditions (反应条件): 总重要性 = {reaction_sum:.6f} ({reaction_sum/total_importance*100:.1f}%)")
+print(f"  包含特征数: {len(reaction_features)}")
+for _, row in reaction_features.iterrows():
+    print(f"  - {row['feature']}: {row['importance']:.6f} ({row['importance']/total_importance*100:.2f}%)")
+
+print(f"\n三类特征重要性总和: {total_importance:.6f} (100.0%)")
+
+## PDP
+# ============================================================================
+# 局部依赖图（Partial Dependence Plots）分析 - C6+OH选择性
+# ============================================================================
+print("\n" + "="*60)
+print("开始生成局部依赖图（PDP）分析 - 目标变量: C6+OH选择性")
+print("="*60)
+
+# 获取原始数据（未标准化的数据）
+X_original_full = pd.read_excel("2.3.3CuFe.xlsx").iloc[:, :-1]
+train_indices = X_train.index
+X_train_original = X_original_full.loc[train_indices]
+
+# 计算基准预测值（所有特征取平均时的预测）- 针对C6+OH选择性
+baseline_prediction = best_xgb.predict(X_train).mean()
+print(f"基准预测值（平均预测 - C6+OH选择性）: {baseline_prediction:.4f}%")
+
+# 从SHAP重要性中获取前N个重要特征
+top6_features_names = top6_features['original_name'].values
+top6_features_display_names = top6_features['feature'].values
+
+top4_features_names = top6_features['original_name'].values[:4]
+top4_features_display_names = top6_features['feature'].values[:4]
+
+top3_features_names = top6_features['original_name'].values[:3]
+top3_features_display_names = top6_features['feature'].values[:3]
+
+print(f"\n一维PDP使用的特征（前6个）: {list(top6_features_display_names)}")
+print(f"二维PDP使用的特征（前4个）: {list(top4_features_display_names)}")
+print(f"三维PDP使用的特征（前3个）: {list(top3_features_display_names)}")
+
+# 定义安全的文件名转换函数
+def safe_filename(name):
+    illegal_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    safe_name = name
+    for char in illegal_chars:
+        safe_name = safe_name.replace(char, '_')
+    return safe_name
+
+# 定义柔和的颜色
+soft_colors_pdp = ['#1E4C9C', '#4CAF50', '#FCBB44', '#E74C3C', '#9B59B6', '#1ABC9C']
+
+# 定义特征名称到带单位标签的精确映射（用于坐标轴和图例）
+feature_unit_map = {
+    'P': 'P(MPa)',
+    'T': 'T(K)',
+    'Tc': 'Tc(h)',
+    'FexC': r'Fe$_{x}$C',
+    'χp': r'χ$_{p}$(Å$^{-1}$)',
+    'Cu/Fe': 'Cu/Fe'
+}
+
+# 定义特征名称到不带单位标签的精确映射（用于标题）
+feature_name_map = {
+    'P': 'P',
+    'T': 'T',
+    'Tc': 'Tc',
+    'FexC': r'Fe$_{x}$C',
+    'χp': r'χ$_{p}$',
+    'Cu/Fe': 'Cu/Fe'
+}
+
+def get_feature_label_with_unit(feature_display_name, original_name):
+    """根据特征名称返回带单位的标签（用于坐标轴和图例）"""
+    for key, label in feature_unit_map.items():
+        if original_name == key:
+            return label
+    return feature_display_name
+
+def get_feature_label_without_unit(feature_display_name, original_name):
+    """根据特征名称返回不带单位的标签（用于标题）"""
+    for key, label in feature_name_map.items():
+        if original_name == key:
+            return label
+    return feature_display_name
+
+get_feature_label_for_legend = get_feature_label_with_unit
+
+# ============================================================================
+# 1. 一维局部依赖图（6个特征，每个特征一个图）
+# ============================================================================
+print("\n[1/3] 生成一维局部依赖图...")
+
+for i, (feat_name, feat_display_name, color) in enumerate(zip(top6_features_names, top6_features_display_names, soft_colors_pdp)):
+    print(f"  处理特征: {feat_name} ({feat_display_name})")
+    
+    try:
+        # 获取原始数据的范围
+        orig_min = X_train_original[feat_name].min()
+        orig_max = X_train_original[feat_name].max()
+        
+        # 获取特征在标准化数据中的索引
+        feature_idx = X_train.columns.get_loc(feat_name)
+        
+        # 创建网格点（在原始空间直接创建，避免转换问题）
+        original_grid = np.linspace(orig_min, orig_max, 50)
+        
+        # 计算部分依赖值
+        pdp_values = []
+        
+        for orig_point in original_grid:
+            # 创建测试数据副本
+            X_test_point = X_train.copy()
+            # 将测试点转换到标准化空间
+            temp_point = np.zeros((1, X_train.shape[1]))
+            temp_point[0, feature_idx] = orig_point
+            standardized_point = scaler.transform(temp_point)[0, feature_idx]
+            X_test_point[feat_name] = standardized_point
+            
+            # 预测C6+OH选择性
+            predictions = best_xgb.predict(X_test_point)
+            pdp_value = np.mean(predictions)
+            pdp_values.append(pdp_value)
+        
+        # 计算相对于基准的标准化影响
+        pdp_centered = np.array(pdp_values) - baseline_prediction
+        
+        # 创建图形
+        fig, ax = plt.subplots(figsize=(6, 5))
+        
+        # 绘制PDP曲线
+        ax.plot(original_grid, pdp_centered, color=color, linewidth=2.5, alpha=0.9, 
+                marker='o', markersize=3, markevery=len(original_grid)//10)
+        
+        # 填充曲线与零线之间的区域
+        ax.fill_between(original_grid, pdp_centered, 0, alpha=0.2, color=color)
+        
+        # 添加零线
+        ax.axhline(y=0, color='black', linestyle='-', alpha=0.5, linewidth=1)
+        
+        # 添加特征分布
+        ax2 = ax.twinx()
+        feature_data = X_train_original[feat_name].values
+        counts, bins = np.histogram(feature_data, bins=30)
+        counts_norm = counts / counts.max() * (np.max(pdp_centered) - np.min(pdp_centered)) * 0.3 if (np.max(pdp_centered) - np.min(pdp_centered)) != 0 else counts / counts.max() * 0.3
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+        ax2.bar(bin_centers, counts_norm, width=(bins[1]-bins[0])*0.8, 
+                alpha=0.3, color=color, edgecolor='none')
+        ax2.set_ylabel('Distribution', fontsize=17, fontweight='bold')
+        ax2.tick_params(axis='y', labelsize=15, width=1.5, length=6)
+        
+        # 设置标签（删除标题）
+        x_label_with_unit = get_feature_label_with_unit(feat_display_name, feat_name)
+        ax.set_xlabel(x_label_with_unit, fontsize=17, fontweight='bold')
+        ax.set_ylabel('Standardized Effect on\nC$_{6+}$OH Selectivity (%)', fontsize=15, fontweight='bold')
+        
+        ax.set_xlim(orig_min, orig_max)
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.8)
+        ax.set_axisbelow(True)
+        # 加粗轴刻度线并加长
+        ax.tick_params(axis='both', labelsize=17, width=1.5, length=7)
+        # 设置坐标轴线宽
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.5)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # 保存图片
+        safe_feat_name = safe_filename(feat_name)
+        file_name_tiff = f"1D_PDP_{safe_feat_name}.tiff"
+        file_name_pdf = f"1D_PDP_{safe_feat_name}.pdf"
+        full_path_tiff = os.path.join(explanation_dir, file_name_tiff)
+        full_path_pdf = os.path.join(explanation_dir, file_name_pdf)
+        
+        fig.savefig(full_path_tiff, format='tiff', dpi=600, bbox_inches='tight',
+                    pil_kwargs={'compression': 'tiff_lzw'})
+        fig.savefig(full_path_pdf, format='pdf', bbox_inches='tight')
+        plt.close(fig)
+        
+        print(f"    ✓ 已保存: {file_name_tiff} 和 {file_name_pdf}")
+        
+    except Exception as e:
+        print(f"    ✗ 处理特征 {feat_name} 时出错: {str(e)}")
+        continue
+
+print(f"  完成！共生成 {len(top6_features_names)} 个一维PDP图")
+
+# ============================================================================
+# 2. 二维局部依赖图（前4个特征，两两组合，共6个图）- 全部使用热图形式
+# ============================================================================
+print("\n[2/3] 生成二维局部依赖图（热图形式）...")
+
+from itertools import combinations
+feature_pairs = list(combinations(range(4), 2))
+
+for pair_idx, (idx1, idx2) in enumerate(feature_pairs):
+    feat1_name = top4_features_names[idx1]
+    feat2_name = top4_features_names[idx2]
+    feat1_display = top4_features_display_names[idx1]
+    feat2_display = top4_features_display_names[idx2]
+    
+    print(f"  生成二维PDP热图: {feat1_display} vs {feat2_display}")
+    
+    try:
+        # 获取原始数据范围
+        orig_min1 = X_train_original[feat1_name].min()
+        orig_max1 = X_train_original[feat1_name].max()
+        orig_min2 = X_train_original[feat2_name].min()
+        orig_max2 = X_train_original[feat2_name].max()
+        
+        print(f"    {feat1_name} 范围: [{orig_min1:.3f}, {orig_max1:.3f}]")
+        print(f"    {feat2_name} 范围: [{orig_min2:.3f}, {orig_max2:.3f}]")
+        
+        # 获取特征索引
+        feat1_idx = X_train.columns.get_loc(feat1_name)
+        feat2_idx = X_train.columns.get_loc(feat2_name)
+        
+        # 创建网格（在原始空间创建）
+        n_grid = 50
+        grid1 = np.linspace(orig_min1, orig_max1, n_grid)
+        grid2 = np.linspace(orig_min2, orig_max2, n_grid)
+        
+        # 计算二维PDP值
+        pdp_grid = np.zeros((n_grid, n_grid))
+        
+        for i, val1 in enumerate(grid1):
+            for j, val2 in enumerate(grid2):
+                # 创建测试数据
+                X_test_point = X_train.copy()
+                # 转换到标准化空间
+                temp_point = np.zeros((1, X_train.shape[1]))
+                temp_point[0, feat1_idx] = val1
+                temp_point[0, feat2_idx] = val2
+                standardized_point = scaler.transform(temp_point)[0]
+                X_test_point[feat1_name] = standardized_point[feat1_idx]
+                X_test_point[feat2_name] = standardized_point[feat2_idx]
+                
+                # 预测
+                predictions = best_xgb.predict(X_test_point)
+                pdp_grid[i, j] = np.mean(predictions) - baseline_prediction
+        
+        print(f"    PDP值范围: [{pdp_grid.min():.3f}, {pdp_grid.max():.3f}]")
+        
+        # 创建图形
+        fig, ax = plt.subplots(figsize=(8, 6))
+        
+        # 绘制热图
+        im = ax.imshow(pdp_grid.T, origin='lower', 
+                       extent=[orig_min1, orig_max1, orig_min2, orig_max2],
+                       aspect='auto', cmap='RdBu_r', alpha=0.9)
+        
+        # 添加颜色条
+        cbar = plt.colorbar(im, ax=ax, shrink=0.85)
+        cbar.set_label('Standardized Effect on\nC$_{6+}$OH Selectivity (%)', 
+                       fontsize=20, fontweight='bold')
+        cbar.ax.tick_params(labelsize=20, width=1.5, length=6)
+        # 设置颜色条轴线宽
+        cbar.outline.set_linewidth(1.5)
+        
+        # 设置标签（删除标题）
+        x_label1_with_unit = get_feature_label_with_unit(feat1_display, feat1_name)
+        x_label2_with_unit = get_feature_label_with_unit(feat2_display, feat2_name)
+        ax.set_xlabel(x_label1_with_unit, fontsize=20, fontweight='bold')
+        ax.set_ylabel(x_label2_with_unit, fontsize=20, fontweight='bold')
+        
+        ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+        # 加粗轴刻度线并加长
+        ax.tick_params(axis='both', labelsize=20, width=1.5, length=7)
+        # 设置坐标轴线宽
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.5)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # 保存图片
+        safe_feat1_name = safe_filename(feat1_name)
+        safe_feat2_name = safe_filename(feat2_name)
+        file_name_tiff = f"2D_PDP_Heatmap_{safe_feat1_name}_vs_{safe_feat2_name}.tiff"
+        file_name_pdf = f"2D_PDP_Heatmap_{safe_feat1_name}_vs_{safe_feat2_name}.pdf"
+        full_path_tiff = os.path.join(explanation_dir, file_name_tiff)
+        full_path_pdf = os.path.join(explanation_dir, file_name_pdf)
+        
+        fig.savefig(full_path_tiff, format='tiff', dpi=600, bbox_inches='tight',
+                    pil_kwargs={'compression': 'tiff_lzw'})
+        fig.savefig(full_path_pdf, format='pdf', bbox_inches='tight')
+        plt.close(fig)
+        
+        print(f"    ✓ 已保存: {file_name_tiff} 和 {file_name_pdf}")
+        
+    except Exception as e:
+        print(f"    ✗ 处理特征组合时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        continue
+
+print(f"  完成！共生成 {len(feature_pairs)} 个二维PDP热图")
+
+# ============================================================================
+# 3. 三维局部依赖图（前3个特征，共3个图）
+# ============================================================================
+print("\n[3/3] 生成三维局部依赖图...")
+
+from mpl_toolkits.mplot3d import Axes3D
+
+if len(top3_features_names) >= 3:
+    combos = [(0, 1, 2), (0, 2, 1), (1, 2, 0)]
+    
+    for combo_idx, (x_idx, y_idx, c_idx) in enumerate(combos, 1):
+        feat_x_name = top3_features_names[x_idx]
+        feat_y_name = top3_features_names[y_idx]
+        feat_c_name = top3_features_names[c_idx]
+        feat_x_display = top3_features_display_names[x_idx]
+        feat_y_display = top3_features_display_names[y_idx]
+        feat_c_display = top3_features_display_names[c_idx]
+        
+        print(f"  生成三维PDP组合 {combo_idx}: X={feat_x_display}, Y={feat_y_display}, Color/Z={feat_c_display}")
+        
+        try:
+            # 获取特征索引
+            feat_x_idx = X_train.columns.get_loc(feat_x_name)
+            feat_y_idx = X_train.columns.get_loc(feat_y_name)
+            feat_c_idx = X_train.columns.get_loc(feat_c_name)
+            
+            # 获取原始数据范围
+            orig_min_x = X_train_original[feat_x_name].min()
+            orig_max_x = X_train_original[feat_x_name].max()
+            orig_min_y = X_train_original[feat_y_name].min()
+            orig_max_y = X_train_original[feat_y_name].max()
+            
+            # 获取第三个特征的分位数（低、中、高）
+            c_values_orig = X_train_original[feat_c_name].values
+            c_percentiles = np.percentile(c_values_orig, [10, 50, 90])
+            
+            print(f"    {feat_x_name} 范围: [{orig_min_x:.3f}, {orig_max_x:.3f}]")
+            print(f"    {feat_y_name} 范围: [{orig_min_y:.3f}, {orig_max_y:.3f}]")
+            print(f"    {feat_c_name} 分位数 (10%/50%/90%): {c_percentiles}")
+            
+            # 创建图形（3D）
+            fig = plt.figure(figsize=(12, 9))
+            ax = fig.add_subplot(111, projection='3d')
+            
+            # 颜色方案
+            colors_3d = ['#1E4C9C', '#4CAF50', '#FCBB44']
+            labels_3d = [f'{get_feature_label_with_unit(feat_c_display, feat_c_name)} = {c_val:.3f} (10%ile)' if p_idx==0 
+                        else f'{get_feature_label_with_unit(feat_c_display, feat_c_name)} = {c_val:.3f} (50%ile)' if p_idx==1
+                        else f'{get_feature_label_with_unit(feat_c_display, feat_c_name)} = {c_val:.3f} (90%ile)'
+                        for p_idx, c_val in enumerate(c_percentiles)]
+            
+            # 创建网格
+            n_grid = 20
+            grid_x = np.linspace(orig_min_x, orig_max_x, n_grid)
+            grid_y = np.linspace(orig_min_y, orig_max_y, n_grid)
+            
+            # 为每个分位数计算曲面
+            for p_idx, c_percentile in enumerate(c_percentiles):
+                pdp_grid = np.zeros((n_grid, n_grid))
+                
+                for i, val_x in enumerate(grid_x):
+                    for j, val_y in enumerate(grid_y):
+                        # 创建测试数据
+                        X_test_point = X_train.copy()
+                        temp_point = np.zeros((1, X_train.shape[1]))
+                        temp_point[0, feat_x_idx] = val_x
+                        temp_point[0, feat_y_idx] = val_y
+                        temp_point[0, feat_c_idx] = c_percentile
+                        standardized_point = scaler.transform(temp_point)[0]
+                        X_test_point[feat_x_name] = standardized_point[feat_x_idx]
+                        X_test_point[feat_y_name] = standardized_point[feat_y_idx]
+                        X_test_point[feat_c_name] = standardized_point[feat_c_idx]
+                        
+                        # 预测
+                        predictions = best_xgb.predict(X_test_point)
+                        pdp_grid[i, j] = np.mean(predictions) - baseline_prediction
+                
+                print(f"    分位数 {p_idx+1} (10/50/90) PDP范围: [{pdp_grid.min():.3f}, {pdp_grid.max():.3f}]")
+                
+                # 绘制曲面
+                X_mesh, Y_mesh = np.meshgrid(grid_x, grid_y)
+                surf = ax.plot_surface(X_mesh, Y_mesh, pdp_grid.T, 
+                                       alpha=0.7, color=colors_3d[p_idx], 
+                                       label=labels_3d[p_idx],
+                                       edgecolor='none', linewidth=0)
+            
+            # 设置标签和标题（删除标题）
+            x_label_with_unit = get_feature_label_with_unit(feat_x_display, feat_x_name)
+            y_label_with_unit = get_feature_label_with_unit(feat_y_display, feat_y_name)
+            
+            # 增加labelpad使标签离轴刻度线更远
+            ax.set_xlabel(x_label_with_unit, fontsize=21, fontweight='bold', labelpad=20)
+            ax.set_ylabel(y_label_with_unit, fontsize=21, fontweight='bold', labelpad=20)
+            ax.set_zlabel('Standardized Effect on\nC$_{6+}$OH Selectivity (%)', 
+                          fontsize=19, fontweight='bold', labelpad=20)
+            
+            # 图例
+            ax.legend(loc='upper right', fontsize=21)
+            ax.view_init(elev=25, azim=-60)
+            # 加粗轴刻度线并加长
+            ax.tick_params(axis='both', labelsize=21, width=1.5, length=7)
+            # 设置坐标轴线宽
+            for spine in ax.spines.values():
+                if hasattr(spine, 'set_linewidth'):
+                    spine.set_linewidth(1.5)
+            
+            plt.tight_layout()
+            plt.show()
+            
+            # 保存图片
+            safe_x_name = safe_filename(feat_x_name)
+            safe_y_name = safe_filename(feat_y_name)
+            safe_c_name = safe_filename(feat_c_name)
+            file_name_tiff = f"3D_PDP_{safe_x_name}_vs_{safe_y_name}_color_{safe_c_name}.tiff"
+            file_name_pdf = f"3D_PDP_{safe_x_name}_vs_{safe_y_name}_color_{safe_c_name}.pdf"
+            full_path_tiff = os.path.join(explanation_dir, file_name_tiff)
+            full_path_pdf = os.path.join(explanation_dir, file_name_pdf)
+            
+            fig.savefig(full_path_tiff, format='tiff', dpi=600, bbox_inches='tight',
+                        pil_kwargs={'compression': 'tiff_lzw'})
+            fig.savefig(full_path_pdf, format='pdf', bbox_inches='tight')
+            plt.close(fig)
+            
+            print(f"    ✓ 已保存: {file_name_tiff} 和 {file_name_pdf}")
+            
+        except Exception as e:
+            print(f"    ✗ 处理三维组合时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+print(f"  完成！共生成 {len(combos)} 个三维PDP图")
+
+print("\n" + "="*60)
+print("局部依赖图（PDP）生成完成！")
+print(f"所有PDP图表已保存至: {explanation_dir}")
+print("  - 一维PDP: 6个图（标准化效果，含特征分布）")
+print("  - 二维PDP热图: 6个图（热图样式）")
+print(f"  - 三维PDP: {len(combos)}个图（3D曲面样式，覆盖所有特征组合）")
+print("="*60)
