@@ -1,0 +1,559 @@
+## Optinal range
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+from scipy import stats
+from matplotlib.patches import Polygon
+from matplotlib.patches import Patch
+
+# ==================== 全局字体和字号设置 ====================
+# 使用Times New Roman字体，并增大字号
+GLOBAL_FONT_FAMILY = 'Times New Roman'
+GLOBAL_TITLE_SIZE = 21
+GLOBAL_LABEL_SIZE = 19
+GLOBAL_TICK_SIZE = 16
+GLOBAL_LEGEND_SIZE = 14
+GLOBAL_TEXT_SIZE = 20
+
+# 设置matplotlib参数，应用全局字体和字号
+plt.rcParams['font.family'] = GLOBAL_FONT_FAMILY
+plt.rcParams['font.weight'] = 'bold'
+plt.rcParams['mathtext.fontset'] = 'stix'
+plt.rcParams['mathtext.default'] = 'bf'
+plt.rcParams['axes.labelweight'] = 'bold'
+plt.rcParams['axes.titleweight'] = 'bold'
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+
+plt.rcParams['font.size'] = GLOBAL_TICK_SIZE
+plt.rcParams['axes.titlesize'] = GLOBAL_TITLE_SIZE
+plt.rcParams['axes.labelsize'] = GLOBAL_LABEL_SIZE
+plt.rcParams['xtick.labelsize'] = GLOBAL_TICK_SIZE
+plt.rcParams['ytick.labelsize'] = GLOBAL_TICK_SIZE
+plt.rcParams['legend.fontsize'] = GLOBAL_LEGEND_SIZE
+plt.rcParams['figure.titlesize'] = GLOBAL_TITLE_SIZE
+# ==========================================================
+
+# 定义名称字典（使用加粗下角标）
+display_dict = {
+    'CT': 'CT(K)', 'Tc': 'Tc(h)', 'Ps': 'Ps(nm)', 'Pv': 'Pv(cm$^{\mathbf{3}}$g$^{\mathbf{-1}}$)',
+    'BET': 'BET(m$^{\mathbf{2}}$g$^{\mathbf{-1}}$)', 'Cu/Fe': 'Cu/Fe', 'RT': 'RT(K)', 'Tr': 'Tr(h)', 
+    'H2/CO': 'H$_{\mathbf{2}}$/CO', 'T': 'T(K)', 'TOS': 'TOS(h)', 'P': 'P(MPa)', 
+    'GHSV': 'GHSV (h$^{\mathbf{-1}}$)'
+}
+
+print("\n" + "="*80)
+print("开始筛选最佳工艺范围（基于实际目标性能）")
+print("="*80)
+
+# 读取数据
+data = pd.read_excel("2.3.3CuFe.xlsx")
+
+# 创建新的保存目录 - 使用指定的路径
+output_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\4.最优机器学习模型预测图"
+os.makedirs(output_dir, exist_ok=True)
+
+# 6. 使用原始数据的实际目标性能（第26列）进行筛选
+print("\n步骤1: 分析目标性能列...")
+
+# 目标性能列是最后一列（第26列）
+target_column = data.columns[-1]
+actual_target = data[target_column].values
+
+print(f"目标性能列: {target_column}")
+print(f"目标性能统计：")
+print(f"  最小值: {actual_target.min():.6f}")
+print(f"  最大值: {actual_target.max():.6f}")
+print(f"  平均值: {actual_target.mean():.6f}")
+print(f"  中位数: {np.median(actual_target):.6f}")
+print(f"  标准差: {actual_target.std():.6f}")
+
+# 7. 筛选最佳工艺范围
+print("\n步骤2: 筛选最佳工艺范围...")
+
+# 定义筛选策略：选择实际性能最高的前20%样本
+percentile_threshold = 80
+best_threshold = np.percentile(actual_target, percentile_threshold)
+print(f"最佳性能阈值（前{100-percentile_threshold}%）: {best_threshold:.6f}")
+
+# 筛选出实际性能高于阈值的样本
+best_mask = actual_target >= best_threshold
+best_samples = data[best_mask].copy()
+print(f"\n筛选出的最佳样本数量: {len(best_samples)} / {len(data)} ({len(best_samples)/len(data)*100:.1f}%)")
+
+# 8. 提取需要保存的列
+print("\n步骤3: 提取指定列...")
+
+selected_cols_indices = list(range(6, 14)) + list(range(17, 22))
+selected_cols_names = [data.columns[i] for i in selected_cols_indices]
+
+print(f"选择的特征列（共{len(selected_cols_names)}列）:")
+for i, col in enumerate(selected_cols_names, 1):
+    display_name = display_dict.get(col, col)
+    print(f"  {i}. {col} -> {display_name} (第{selected_cols_indices[i-1]+1}列)")
+
+# 创建要保存的DataFrame
+output_df = best_samples.iloc[:, selected_cols_indices].copy()
+output_df['Target_Performance'] = best_samples[target_column]
+
+print(f"\n保存的数据形状: {output_df.shape}")
+print(f"保存的列名: {output_df.columns.tolist()}")
+
+# 9. 保存筛选结果到Excel
+output_file = os.path.join(output_dir, "4.3CuFe.xlsx")
+output_df.to_excel(output_file, index=False)
+print(f"\n✓ 最佳工艺范围已保存至: {output_file}")
+
+# 10. 统计最佳工艺范围的特征分布
+print("\n步骤4: 统计最佳工艺范围...")
+print("\n最佳工艺范围统计（原始值）:")
+print("="*80)
+
+summary_data = []
+for col in selected_cols_names:
+    best_min = best_samples[col].min()
+    best_max = best_samples[col].max()
+    best_mean = best_samples[col].mean()
+    best_std = best_samples[col].std()
+    all_min = data[col].min()
+    all_max = data[col].max()
+    all_mean = data[col].mean()
+    display_name = display_dict.get(col, col)
+    
+    print(f"{display_name}:")
+    print(f"  最佳范围: [{best_min:.4f}, {best_max:.4f}] (均值: {best_mean:.4f} ± {best_std:.4f})")
+    print(f"  全部范围: [{all_min:.4f}, {all_max:.4f}] (均值: {all_mean:.4f})")
+    print(f"  范围收窄: {(all_max - all_min) - (best_max - best_min):.4f}")
+    print()
+    
+    summary_data.append({
+        'Feature_Original': col,
+        'Feature_Display': display_name,
+        'Optimal_Min': best_min,
+        'Optimal_Max': best_max,
+        'Optimal_Mean': best_mean,
+        'Optimal_Std': best_std,
+        'All_Min': all_min,
+        'All_Max': all_max,
+        'All_Mean': all_mean,
+        'Range_Narrowing': (all_max - all_min) - (best_max - best_min)
+    })
+
+summary_df = pd.DataFrame(summary_data)
+summary_output_file = os.path.join(output_dir, "4.3_Optimal_Ranges_Summary.xlsx")
+summary_df.to_excel(summary_output_file, index=False)
+print(f"\n✓ 最佳工艺范围摘要已保存至: {summary_output_file}")
+
+# 11. 为每个特征单独生成图表
+print("\n步骤5: 为每个特征单独创建可视化图表...")
+
+# 扩展暖色调颜色列表（确保每个特征颜色都不同）
+# 使用更多不同的颜色
+warm_colors = [
+    '#FF6B6B',  # 珊瑚红
+    '#FF9F43',  # 橘色
+    '#FECA57',  # 金黄色
+    '#48DBFB',  # 亮蓝
+    '#FF6BCB',  # 粉红
+    '#54A0FF',  # 天蓝
+    '#5F27CD',  # 紫色
+    '#1DD1A1',  # 薄荷绿
+    '#F368E0',  # 品红
+    '#00D2D3',  # 青色
+    '#FF9FF3',  # 浅粉
+    '#F8A5C2',  # 玫瑰粉
+    '#74B9FF',  # 淡蓝
+    '#55EFC4',  # 浅绿
+    '#FDCB6E',  # 香槟黄
+    '#E17055',  # 陶土红
+    '#00CEC9',  # 蓝绿
+    '#A29BFE',  # 淡紫
+    '#FD79A8',  # 樱花粉
+    '#0984E3',  # 宝蓝
+    '#FDCB6E',  # 金色
+    '#00B894',  # 翠绿
+    '#E84393',  # 玫红
+    '#6C5CE7'   # 紫罗兰
+]
+
+def create_half_violin_with_half_scatter(ax, data, position, width=0.5, color='steelblue', 
+                                         alpha=0.4, scatter_alpha=0.25, scatter_size=8):
+    """创建只有右半边的小提琴图，并且散点也只保留右半边"""
+    
+    y_min, y_max = data.min(), data.max()
+    y_range = y_max - y_min
+    y_vals = np.linspace(y_min - y_range * 0.05, y_max + y_range * 0.05, 200)
+    
+    try:
+        density = stats.gaussian_kde(data)
+        density_vals = density(y_vals)
+        if density_vals.max() > 0:
+            density_norm = density_vals / density_vals.max() * (width / 2)
+        else:
+            density_norm = np.zeros_like(density_vals)
+    except:
+        density_norm = np.full_like(y_vals, width / 4)
+    
+    vertices = []
+    for i in range(len(y_vals)):
+        vertices.append([position + density_norm[i], y_vals[i]])
+    vertices.append([position, y_vals[-1]])
+    vertices.append([position, y_vals[0]])
+    vertices = np.array(vertices)
+    
+    if len(vertices) > 0:
+        violin_polygon = Polygon(vertices, facecolor=color, alpha=alpha, 
+                                 edgecolor='black', linewidth=1.5, zorder=3)
+        ax.add_patch(violin_polygon)
+    
+    n_points = len(data)
+    right_half_width = width * 0.4
+    jitter = np.random.uniform(0, right_half_width, n_points)
+    scatter_x = position + jitter
+    scatter_y = data
+    
+    ax.scatter(scatter_x, scatter_y, c=color, alpha=scatter_alpha, 
+              s=scatter_size, edgecolors='none', linewidth=0, zorder=2)
+    
+    ax.axvline(x=position, color='gray', linestyle='--', linewidth=1, alpha=0.5, zorder=1)
+    
+    return violin_polygon
+
+# 为每个特征单独生成图表
+for idx, col in enumerate(selected_cols_names):
+    print(f"  正在生成: {col}...")
+    
+    best_data = best_samples[col].dropna().values
+    
+    display_name = display_dict.get(col, col)
+    
+    # 使用不同的颜色索引，确保每个特征颜色不同
+    color_idx = idx % len(warm_colors)
+    feature_color = warm_colors[color_idx]
+    
+    fig, ax = plt.subplots(figsize=(5, 4), dpi=100)
+    
+    position_best_left = 0.35
+    position_best_right = 0.65
+    
+    # 左侧：最佳数据的箱线图
+    bp_best = ax.boxplot([best_data], positions=[position_best_left], widths=0.35,
+                         patch_artist=True,
+                         boxprops=dict(facecolor=feature_color, alpha=0.7, linewidth=1.8, 
+                                      edgecolor='black'),
+                         medianprops=dict(color='red', linewidth=2.5),
+                         whiskerprops=dict(color='black', linewidth=1.5),
+                         capprops=dict(color='black', linewidth=1.5),
+                         flierprops=dict(marker='o', markersize=6, alpha=0.6,
+                                        markeredgecolor='black', markerfacecolor=feature_color))
+    
+    # 右侧：最佳数据的右半边小提琴图
+    create_half_violin_with_half_scatter(ax, best_data, position_best_right, width=0.35, 
+                                          color=feature_color, alpha=0.4, 
+                                          scatter_alpha=0.35, scatter_size=10)
+    
+    ax.set_xticks([position_best_left, position_best_right])
+    ax.set_xticklabels([])
+    ax.set_xlabel('')
+    ax.tick_params(axis='x', which='both', length=0)
+    
+    # y轴刻度加粗并加长
+    ax.tick_params(axis='y', which='both', width=1.8, length=8, labelsize=GLOBAL_TICK_SIZE)
+    # 设置y轴线宽
+    for spine in ['left', 'right']:
+        ax.spines[spine].set_linewidth(1.8)
+    # 设置x轴线宽（底部和顶部）
+    for spine in ['bottom', 'top']:
+        ax.spines[spine].set_linewidth(1.8)
+    
+    ax.set_ylabel('')
+    
+    # 特征名称放在图片下方
+    plt.figtext(0.5, 0.01, display_name, ha='center', fontsize=GLOBAL_TEXT_SIZE, 
+                fontweight='bold', fontfamily='Times New Roman')
+    
+    # 添加网格
+    ax.grid(True, alpha=0.2, axis='y', linestyle='--', linewidth=0.8)
+    ax.set_axisbelow(True)
+    
+    y_min = best_data.min()
+    y_max = best_data.max()
+    y_range = y_max - y_min
+    ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.05)
+    ax.set_xlim(0, 1)
+    
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.1)
+    
+    safe_filename = col.replace('/', '_').replace('\\', '_').replace(' ', '_').replace('(', '_').replace(')', '_')
+    output_fig = os.path.join(output_dir, f"Feature_{idx+1:02d}_{safe_filename}.tiff")
+    
+    plt.savefig(output_fig, dpi=300, format='tiff', bbox_inches='tight')
+    print(f"    已保存: {output_fig}")
+    
+    plt.show()
+    plt.close(fig)
+
+print(f"\n✓ 已为 {len(selected_cols_names)} 个特征单独生成TIFF图表，保存至: {output_dir}")
+
+print("\n" + "="*80)
+print("任务完成！")
+print(f"最佳工艺范围已保存至: {output_file}")
+print(f"最佳工艺范围摘要已保存至: {summary_output_file}")
+print(f"可视化图片保存目录: {output_dir}")
+print(f"\n生成的图片包括：")
+print(f"  各特征单独图表 ({len(selected_cols_names)}个TIFF文件) 直接保存在: {output_dir}")
+print("="*80)
+
+print("\n最佳工艺范围摘要（基于实际目标性能）:")
+print("-"*80)
+print(summary_df[['Feature_Display', 'Optimal_Min', 'Optimal_Max', 'Optimal_Mean', 'Optimal_Std']].to_string(index=False))
+print("-"*80)
+
+print(f"\n目标性能 ({target_column}) 统计:")
+print(f"  最优样本集: {len(best_samples)} 个样本")
+print(f"  最优样本性能范围: [{best_samples[target_column].min():.4f}, {best_samples[target_column].max():.4f}]")
+print(f"  最优样本性能均值: {best_samples[target_column].mean():.4f} ± {best_samples[target_column].std():.4f}")
+print(f"  全部样本性能均值: {actual_target.mean():.4f} ± {actual_target.std():.4f}")
+print(f"  性能提升: {(best_samples[target_column].mean() - actual_target.mean()):.4f} ({((best_samples[target_column].mean()/actual_target.mean() - 1)*100):.1f}%)")
+print("="*80)
+
+## Predict
+
+# 预测新的催化剂组合（生成10000个样本，工艺参数独立随机）
+print("\n" + "="*80)
+print("开始预测新的催化剂组合（生成10000个样本）")
+print("="*80)
+
+# 设置随机种子，确保结果可重复
+np.random.seed(42)
+random.seed(42)
+
+# 1. 读取数据
+print("\n步骤1: 读取数据文件...")
+# 读取晶体、载体、助剂信息（4.2.2CuFe.xlsx）
+crystal_data = pd.read_excel("4.2.2CuFe.xlsx")
+print(f"4.2.2CuFe.xlsx数据形状: {crystal_data.shape}")
+
+# 读取最佳工艺范围（4.3CuFe.xlsx）
+optimal_ranges = pd.read_excel(os.path.join(output_dir, "4.3CuFe.xlsx"))
+print(f"4.3CuFe.xlsx数据形状: {optimal_ranges.shape}")
+
+# 读取原始数据获取制备方法列（第1-6列）
+original_data = pd.read_excel("2.3.3CuFe.xlsx")
+preparation_methods = original_data.iloc[:, 0:6]  # 第1-6列（索引0-5）
+unique_methods = preparation_methods.drop_duplicates().reset_index(drop=True)
+print(f"独特的催化剂制备方法组合数量: {len(unique_methods)}")
+
+# 2. 提取4.2.2CuFe.xlsx中的各组数据
+print("\n步骤2: 提取4.2.2CuFe.xlsx中的各组数据...")
+# 组1：晶体相相关信息（第1、2、3列）-> 对应原始数据的第15-17列
+group1 = crystal_data.iloc[:, 0:3].copy()
+group1 = group1.drop_duplicates().reset_index(drop=True)
+print(f"组1（晶体相）组合数量: {len(group1)}")
+print(f"组1列名: {group1.columns.tolist()}")
+
+# 组2：载体相关信息（第4、5列）-> 对应原始数据的第23-24列
+group2 = crystal_data.iloc[:, 3:5].copy()
+group2 = group2.drop_duplicates().reset_index(drop=True)
+print(f"组2（载体）组合数量: {len(group2)}")
+print(f"组2列名: {group2.columns.tolist()}")
+
+# 组3：助剂相关信息（第6列）-> 对应原始数据的第25列
+group3 = crystal_data.iloc[:, 5:6].copy()
+group3 = group3.drop_duplicates().reset_index(drop=True)
+print(f"组3（助剂）组合数量: {len(group3)}")
+print(f"组3列名: {group3.columns.tolist()}")
+
+# 3. 提取最佳工艺范围数据（4.3CuFe.xlsx）
+print("\n步骤3: 提取4.3CuFe.xlsx中的最佳工艺范围...")
+# 4.3CuFe.xlsx第1-8列（对应原始数据第7-14列）- 每列独立
+process_ranges_1 = optimal_ranges.iloc[:, 0:8].copy().reset_index(drop=True)
+print(f"工艺范围1（第1-8列，对应7-14列）数据形状: {process_ranges_1.shape}")
+print(f"工艺范围1列名: {process_ranges_1.columns.tolist()}")
+
+# 4.3CuFe.xlsx第9-13列（对应原始数据第18-22列）- 每列独立
+process_ranges_2 = optimal_ranges.iloc[:, 8:13].copy().reset_index(drop=True)
+print(f"工艺范围2（第9-13列，对应18-22列）数据形状: {process_ranges_2.shape}")
+print(f"工艺范围2列名: {process_ranges_2.columns.tolist()}")
+
+# 4. 生成10000个随机组合
+print("\n步骤4: 生成10000个随机组合...")
+print("组合规则：")
+print("  - 组1（晶体相）三列信息始终一起选择（保持对应关系）")
+print("  - 组2（载体）两列信息始终一起选择（保持对应关系）")
+print("  - 组3（助剂）单列信息单独选择")
+print("  - 工艺范围1的8列参数每列独立随机选择（不保持行对应关系）")
+print("  - 工艺范围2的5列参数每列独立随机选择（不保持行对应关系）")
+print("  - 催化剂制备方法（1-6列）整行一起选择（保持对应关系）")
+
+# 设置生成数量
+n_samples = 10000
+
+# 准备存储所有组合的列表
+all_combinations = []
+
+# 随机采样生成10000个组合
+for i in range(n_samples):
+    if (i + 1) % 1000 == 0:
+        print(f"  已生成 {i+1}/{n_samples} 个组合...")
+    
+    combination = {}
+    
+    # 1. 随机选择制备方法（第1-6列）- 从unique_methods中随机选择一行（整行保持对应）
+    method_idx = np.random.randint(0, len(unique_methods))
+    method_row = unique_methods.iloc[method_idx]
+    for j in range(6):
+        combination[f'method_{j+1}'] = method_row.iloc[j]
+    
+    # 2. 随机选择工艺范围1（第7-14列）- 每列独立随机选择
+    # 工艺范围1有8列，每列从process_ranges_1中独立随机选择值
+    for j in range(8):
+        col_idx = np.random.randint(0, len(process_ranges_1))
+        combination[f'process1_{j+1}'] = process_ranges_1.iloc[col_idx, j]
+    
+    # 3. 随机选择晶体相信息（第15-17列）- 从group1中随机选择一行（三列一起）
+    g1_idx = np.random.randint(0, len(group1))
+    g1_row = group1.iloc[g1_idx]
+    for j in range(3):
+        combination[f'crystal_{j+1}'] = g1_row.iloc[j]
+    
+    # 4. 随机选择工艺范围2（第18-22列）- 每列独立随机选择
+    # 工艺范围2有5列，每列从process_ranges_2中独立随机选择值
+    for j in range(5):
+        col_idx = np.random.randint(0, len(process_ranges_2))
+        combination[f'process2_{j+1}'] = process_ranges_2.iloc[col_idx, j]
+    
+    # 5. 随机选择载体信息（第23-24列）- 从group2中随机选择一行（两列一起）
+    g2_idx = np.random.randint(0, len(group2))
+    g2_row = group2.iloc[g2_idx]
+    for j in range(2):
+        combination[f'carrier_{j+1}'] = g2_row.iloc[j]
+    
+    # 6. 随机选择助剂信息（第25列）- 从group3中随机选择一行
+    g3_idx = np.random.randint(0, len(group3))
+    g3_row = group3.iloc[g3_idx]
+    combination['promoter'] = g3_row.iloc[0]
+    
+    all_combinations.append(combination)
+
+# 转换为DataFrame
+df_combinations = pd.DataFrame(all_combinations)
+print(f"\n实际生成的组合数: {len(df_combinations):,}")
+
+print(f"\n组合数据形状: {df_combinations.shape}")
+print(f"组合数据列名（前10列）: {df_combinations.columns.tolist()[:10]}")
+
+# 5. 重构DataFrame为原始数据的格式（第1-25列）
+print("\n步骤5: 重构数据格式为2.3.3CuFe.xlsx的格式（第1-25列）...")
+
+# 创建最终的DataFrame，按照原始数据结构（第1-25列）排列
+final_df = pd.DataFrame()
+
+# 第1-6列：催化剂制备方法
+print("  处理第1-6列（制备方法）...")
+for i in range(1, 7):
+    col_name = f'method_{i}'
+    final_df[f'Col_{i}'] = df_combinations[col_name]
+
+# 第7-14列：工艺范围1（来自4.3CuFe.xlsx第1-8列）- 每列独立
+print("  处理第7-14列（工艺范围1，每列独立）...")
+for i in range(1, 9):
+    col_name = f'process1_{i}'
+    final_df[f'Col_{i+6}'] = df_combinations[col_name]
+
+# 第15-17列：晶体相信息（来自4.2.2CuFe.xlsx第1-3列，即组1）- 三列一起
+print("  处理第15-17列（晶体相信息，三列一起）...")
+for i in range(1, 4):
+    col_name = f'crystal_{i}'
+    final_df[f'Col_{i+14}'] = df_combinations[col_name]
+
+# 第18-22列：工艺范围2（来自4.3CuFe.xlsx第9-13列）- 每列独立
+print("  处理第18-22列（工艺范围2，每列独立）...")
+for i in range(1, 6):
+    col_name = f'process2_{i}'
+    final_df[f'Col_{i+17}'] = df_combinations[col_name]
+
+# 第23-24列：载体信息（来自4.2.2CuFe.xlsx第4-5列，即组2）- 两列一起
+print("  处理第23-24列（载体信息，两列一起）...")
+for i in range(1, 3):
+    col_name = f'carrier_{i}'
+    final_df[f'Col_{i+22}'] = df_combinations[col_name]
+
+# 第25列：助剂信息（来自4.2.2CuFe.xlsx第6列，即组3）
+print("  处理第25列（助剂信息）...")
+final_df['Col_25'] = df_combinations['promoter']
+
+print(f"\n重构后的数据形状: {final_df.shape}")
+print(f"重构后的前3行:\n{final_df.head(3)}")
+
+# 6. 重命名列为原始特征名称
+print("\n步骤6: 重命名为原始特征名称...")
+# 获取原始数据的列名（前25列）
+original_columns = original_data.columns.tolist()[:25]
+print(f"原始数据列名（前25列）: {original_columns}")
+
+# 使用原始数据的列名
+final_df.columns = original_columns
+
+print(f"重命名完成，列名已匹配原始数据格式")
+print(f"确认第7-14列（工艺范围1）: {final_df.columns[6:14]}")
+print(f"确认第15-17列（晶体相）: {final_df.columns[14:17]}")
+print(f"确认第18-22列（工艺范围2）: {final_df.columns[17:22]}")
+print(f"确认第23-24列（载体）: {final_df.columns[22:24]}")
+print(f"确认第25列（助剂）: {final_df.columns[24]}")
+
+# 7. 验证数据完整性
+print("\n步骤7: 验证数据完整性...")
+# 检查是否有缺失值
+missing_counts = final_df.isnull().sum()
+if missing_counts.sum() > 0:
+    print(f"警告: 存在缺失值:\n{missing_counts[missing_counts > 0]}")
+    # 填充缺失值
+    final_df = final_df.fillna(0)
+else:
+    print("数据完整，无缺失值")
+
+# 显示各列的基本统计信息
+print("\n工艺范围1各列统计（第7-14列）:")
+for i, col in enumerate(final_df.columns[6:14], 7):
+    print(f"  第{i}列 {col}: min={final_df[col].min():.4f}, max={final_df[col].max():.4f}, mean={final_df[col].mean():.4f}")
+
+print("\n工艺范围2各列统计（第18-22列）:")
+for i, col in enumerate(final_df.columns[17:22], 18):
+    print(f"  第{i}列 {col}: min={final_df[col].min():.4f}, max={final_df[col].max():.4f}, mean={final_df[col].mean():.4f}")
+
+print("\n晶体相各列统计（第15-17列）:")
+for i, col in enumerate(final_df.columns[14:17], 15):
+    print(f"  第{i}列 {col}: 唯一值数量={final_df[col].nunique()}")
+
+print("\n载体各列统计（第23-24列）:")
+for i, col in enumerate(final_df.columns[22:24], 23):
+    print(f"  第{i}列 {col}: 唯一值数量={final_df[col].nunique()}")
+
+print(f"\n助剂（第25列）: 唯一值数量={final_df[final_df.columns[24]].nunique()}")
+
+# 8. 数据标准化和预测
+print("\n步骤8: 使用已训练的XGBoost模型进行预测...")
+
+# 确保特征顺序与训练时一致
+training_columns = X.columns.tolist()
+print(f"训练时的特征列数: {len(training_columns)}")
+print(f"当前数据列数: {len(final_df.columns)}")
+
+# 标准化数据（使用之前训练时的scaler）
+X_new = scaler.transform(final_df)
+X_new = pd.DataFrame(X_new, columns=final_df.columns)
+
+# 使用已训练好的模型进行预测
+predictions = best_xgb.predict(X_new)
+
+# 添加预测结果到最终DataFrame
+final_df['C6+OH_Selectivity_Predicted'] = predictions
+print(f"\n预测完成！")
+print(f"  预测值范围: [{predictions.min():.4f}, {predictions.max():.4f}]")
+print(f"  预测值均值: {predictions.mean():.4f} ± {predictions.std():.4f}")
+
+
