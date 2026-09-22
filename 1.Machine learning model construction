@@ -1,0 +1,1037 @@
+## PLS
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error
+from skopt import gp_minimize
+from skopt.space import Integer
+from skopt.utils import use_named_args
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# 设置matplotlib参数
+plt.rcParams.update(plt.rcParamsDefault)
+plt.rcParams.update({
+    'font.family': 'Times New Roman',
+    'font.size': 16,
+    'font.weight': 'bold',
+    'text.usetex': False,
+    'mathtext.fontset': 'cm',
+    'mathtext.default': 'bf',
+    'axes.linewidth': 1.5,
+    'axes.grid': False,
+    'grid.alpha': 0.3,
+    'legend.frameon': False,
+    'legend.fontsize': 11
+})
+
+# 创建保存目录
+scatter_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\2.机器学习模型散点图"
+os.makedirs(scatter_dir, exist_ok=True)
+
+# 1. 数据加载和预处理
+print("正在加载数据...")
+data = pd.read_excel("2.3.3CuFe.xlsx")
+print(f"数据集形状: {data.shape}")
+
+# 分离特征和目标变量
+X = data.iloc[:, :-1]  # 前面所有列作为特征
+y = data.iloc[:, -1]   # 最后一列作为目标变量
+
+print(f"特征数量: {X.shape[1]}")
+print(f"样本数量: {X.shape[0]}")
+
+# 数据标准化
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+# 数据集划分 - 使用分层抽样确保分布一致
+# 创建目标变量的分层标签（将连续变量分箱）
+n_bins = min(5, len(y) // 5)  # 根据样本量确定分箱数
+y_binned = pd.qcut(y, q=n_bins, labels=False, duplicates='drop')
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42, stratify=y_binned
+)
+
+# 2. 贝叶斯优化调优PLS模型
+print("\n开始贝叶斯优化...")
+
+# 定义优化空间
+space = [Integer(1, min(X.shape[1], 15), name='n_components')]
+
+@use_named_args(space)
+def objective(**params):
+    """贝叶斯优化的目标函数"""
+    pls = PLSRegression(n_components=params['n_components'])
+    
+    # 5折交叉验证
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    
+    # 计算交叉验证R2
+    cv_scores = cross_val_score(pls, X_train, y_train, cv=cv, scoring='r2')
+    
+    return -np.mean(cv_scores)  # 返回负R2，因为gp_minimize是最小化
+
+# 执行贝叶斯优化
+print("开始贝叶斯优化搜索最优参数...")
+result = gp_minimize(objective, space, n_calls=20, random_state=42, verbose=False)
+best_n_components = result.x[0]
+
+print(f"\n最优成分数: {best_n_components}")
+print(f"最优交叉验证R2: {-result.fun:.4f}")
+
+# 使用最优参数计算交叉验证RMSE
+print("\n使用最优参数进行交叉验证评估:")
+best_pls_cv = PLSRegression(n_components=best_n_components)
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(best_pls_cv, X_train, y_train, cv=cv, scoring='r2')
+cv_mse_scores = -cross_val_score(best_pls_cv, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
+cv_rmse_scores = np.sqrt(cv_mse_scores)
+
+print(f"交叉验证 R² 均值: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+print(f"交叉验证 RMSE 均值: {cv_rmse_scores.mean():.4f} ± {cv_rmse_scores.std():.4f}")
+
+# 3. 使用最优参数构建最终模型
+print("\n构建最终PLS模型...")
+best_pls = PLSRegression(n_components=best_n_components)
+best_pls.fit(X_train, y_train)
+
+# 预测
+y_pred_train = best_pls.predict(X_train).ravel()
+y_pred_test = best_pls.predict(X_test).ravel()
+
+# 计算评估指标
+r2_train = r2_score(y_train, y_pred_train)
+r2_test = r2_score(y_test, y_pred_test)
+rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
+rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+print(f"\n模型性能评估:")
+print(f"训练集 R²: {r2_train:.4f}")
+print(f"测试集 R²: {r2_test:.4f}")
+print(f"训练集 RMSE: {rmse_train:.4f}")
+print(f"测试集 RMSE: {rmse_test:.4f}")
+
+# 4. 绘制预测值vs真实值散点图
+print("\n绘制散点图...")
+fig, ax = plt.subplots(figsize=(6, 5))
+
+# 计算绘图范围
+all_values = np.concatenate([y_train.values, y_test.values, y_pred_train, y_pred_test])
+min_val = np.floor(all_values.min())
+max_val = np.ceil(all_values.max())
+
+# 绘制数据点
+ax.scatter(y_train, y_pred_train, c='#1E4C9C', label='Train data', 
+           edgecolor='black', s=50, alpha=1, zorder=1)
+ax.scatter(y_test, y_pred_test, c='#FCBB44', label='Test data', 
+           edgecolor='black', s=50, alpha=1, zorder=2)
+ax.plot([min_val, max_val], [min_val, max_val], linestyle='--', 
+         color='black', label='y=x', linewidth=1.5, zorder=3)
+
+# 设置轴范围和标签
+ax.set_xlim(min_val, max_val)
+ax.set_ylim(min_val, max_val)
+ax.set_xlabel('Experimental values (%)', fontweight='bold', labelpad=5)
+ax.set_ylabel('Predicted values (%)', fontweight='bold', labelpad=5)
+ax.set_title('PLS Regression', fontweight='bold', pad=5)
+
+# 添加图例和统计信息
+ax.legend(loc='best', fontsize=12)
+ax.text(0.05, 0.95, f'Test R² = {r2_test:.3f}\nTest RMSE = {rmse_test:.3f}',
+        transform=ax.transAxes, verticalalignment='top',
+        bbox=dict(facecolor='white', alpha=0.8))
+
+# 调整刻度和布局
+ax.tick_params(which='major', direction='out', length=3, width=1.5)
+ax.tick_params(which='minor', direction='out', length=3, width=1.5)
+plt.tight_layout()
+
+# 保存图片
+file_name = "2.3.3cm_PLS_Optimized.tiff"
+full_path = os.path.join(scatter_dir, file_name)
+fig.savefig(full_path, format='tiff', dpi=400, bbox_inches='tight', pad_inches=0.1)
+plt.show()
+
+print(f"\n散点图已保存到: {full_path}")
+
+
+## SVR
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.svm import SVR
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.inspection import partial_dependence
+from skopt import gp_minimize
+from skopt.space import Real, Integer
+from skopt.utils import use_named_args
+import shap
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# 设置matplotlib参数
+plt.rcParams.update(plt.rcParamsDefault)
+plt.rcParams.update({
+    'font.family': 'Times New Roman',
+    'font.size': 16,
+    'font.weight': 'bold',
+    'text.usetex': False,
+    'mathtext.fontset': 'cm',
+    'mathtext.default': 'bf',
+    'axes.linewidth': 1.5,
+    'axes.grid': False,
+    'grid.alpha': 0.3,
+    'legend.frameon': False,
+    'legend.fontsize': 11
+})
+
+# 创建保存目录
+scatter_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\2.机器学习模型散点图"
+os.makedirs(scatter_dir, exist_ok=True)
+
+# 1. 数据加载和预处理
+print("正在加载数据...")
+data = pd.read_excel("2.3.3CuFe.xlsx")
+print(f"数据集形状: {data.shape}")
+
+# 分离特征和目标变量
+X = data.iloc[:, :-1]  # 前面所有列作为特征
+y = data.iloc[:, -1]   # 最后一列作为目标变量
+
+print(f"特征数量: {X.shape[1]}")
+print(f"样本数量: {X.shape[0]}")
+
+# 数据标准化
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+# 数据集划分
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
+
+# 2. 贝叶斯优化调优SVR模型
+print("\n开始贝叶斯优化...")
+
+# 定义优化空间
+space = [
+    Real(1e-6, 1e+1, prior='log-uniform', name='C'),
+    Real(1e-6, 1e+1, prior='log-uniform', name='epsilon'),
+    Real(1e-6, 1e+1, prior='log-uniform', name='gamma')
+]
+
+@use_named_args(space)
+def objective(**params):
+    """贝叶斯优化的目标函数"""
+    svr = SVR(
+        C=params['C'],
+        epsilon=params['epsilon'],
+        gamma=params['gamma'],
+        kernel='rbf'
+    )
+    
+    # 5折交叉验证
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    scores = cross_val_score(svr, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
+    
+    return -np.mean(scores)  # 返回负值，因为gp_minimize是最小化
+
+# 执行贝叶斯优化
+result = gp_minimize(objective, space, n_calls=30, random_state=42)
+best_C, best_epsilon, best_gamma = result.x
+
+print(f"最优参数: C={best_C:.4f}, epsilon={best_epsilon:.4f}, gamma={best_gamma:.4f}")
+print(f"最优交叉验证MSE: {result.fun:.4f}")
+
+# 3. 使用最优参数构建最终模型
+print("\n构建最终SVR模型...")
+best_svr = SVR(
+    C=best_C,
+    epsilon=best_epsilon,
+    gamma=best_gamma,
+    kernel='rbf'
+)
+best_svr.fit(X_train, y_train)
+
+# 预测
+y_pred_train = best_svr.predict(X_train)
+y_pred_test = best_svr.predict(X_test)
+
+# 计算评估指标
+r2_train = r2_score(y_train, y_pred_train)
+r2_test = r2_score(y_test, y_pred_test)
+rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
+rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+print(f"\n模型性能评估:")
+print(f"训练集 R²: {r2_train:.4f}")
+print(f"测试集 R²: {r2_test:.4f}")
+print(f"训练集 RMSE: {rmse_train:.4f}")
+print(f"测试集 RMSE: {rmse_test:.4f}")
+
+# 4. 交叉验证评估
+print("\n进行交叉验证...")
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(best_svr, X_train, y_train, cv=cv, scoring='r2')
+cv_rmse = np.sqrt(-cross_val_score(best_svr, X_train, y_train, cv=cv, scoring='neg_mean_squared_error'))
+
+print(f"交叉验证 R² 均值: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+print(f"交叉验证 RMSE 均值: {cv_rmse.mean():.4f} ± {cv_rmse.std():.4f}")
+
+# 5. 绘制预测值vs真实值散点图
+print("\n绘制散点图...")
+fig, ax = plt.subplots(figsize=(6, 5))
+
+# 计算绘图范围
+all_values = np.concatenate([y_train.values, y_test.values, y_pred_train.ravel(), y_pred_test.ravel()])
+min_val = np.floor(all_values.min())
+max_val = np.ceil(all_values.max())
+
+# 绘制数据点
+ax.scatter(y_train, y_pred_train, c='#1E4C9C', label='Train data', edgecolor='black', s=50, alpha=1, zorder=1)
+ax.scatter(y_test, y_pred_test, c='#FCBB44', label='Test data', edgecolor='black', s=50, alpha=1, zorder=2)
+ax.plot([min_val, max_val], [min_val, max_val], linestyle='--', color='black', label='y=x', linewidth=1.5)
+
+# 设置轴范围和标签
+ax.set_xlim(min_val, max_val)
+ax.set_ylim(min_val, max_val)
+ax.set_xlabel('Experimental values (%)', fontweight='bold', labelpad=5)
+ax.set_ylabel('Predicted values (%)', fontweight='bold', labelpad=5)
+ax.set_title('SVR Regression', fontweight='bold', pad=5)
+
+# 添加图例和统计信息
+ax.legend(loc='best', fontsize=12)
+ax.text(0.05, 0.95, f'Test R² = {r2_test:.3f}\nTest RMSE = {rmse_test:.3f}',
+        transform=ax.transAxes, verticalalignment='top',
+        bbox=dict(facecolor='white', alpha=0.8))
+
+# 调整刻度和布局
+ax.tick_params(which='major', direction='out', length=3, width=1.5)
+ax.tick_params(which='minor', direction='out', length=3, width=1.5)
+plt.tight_layout()
+
+# 保存图片
+file_name = "2.3.3cm_SVR_Optimized.tiff"
+full_path = os.path.join(scatter_dir, file_name)
+fig.savefig(full_path, format='tiff', dpi=400, bbox_inches='tight', pad_inches=0.1)
+plt.show()
+
+## GBR
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.inspection import partial_dependence
+from skopt import gp_minimize
+from skopt.space import Real, Integer
+from skopt.utils import use_named_args
+import shap
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# 设置matplotlib参数
+plt.rcParams.update(plt.rcParamsDefault)
+plt.rcParams.update({
+    'font.family': 'Times New Roman',
+    'font.size': 16,
+    'font.weight': 'bold',
+    'text.usetex': False,
+    'mathtext.fontset': 'cm',
+    'mathtext.default': 'bf',
+    'axes.linewidth': 1.5,
+    'axes.grid': False,
+    'grid.alpha': 0.3,
+    'legend.frameon': False,
+    'legend.fontsize': 11
+})
+
+# 创建保存目录
+scatter_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\2.机器学习模型散点图"
+os.makedirs(scatter_dir, exist_ok=True)
+
+# 1. 数据加载和预处理
+print("正在加载数据...")
+data = pd.read_excel("2.3.3CuFe.xlsx")
+print(f"数据集形状: {data.shape}")
+
+# 分离特征和目标变量
+X = data.iloc[:, :-1]  # 前面所有列作为特征
+y = data.iloc[:, -1]   # 最后一列作为目标变量
+
+print(f"特征数量: {X.shape[1]}")
+print(f"样本数量: {X.shape[0]}")
+
+# 数据标准化
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+# 数据集划分
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
+
+# 2. 贝叶斯优化调优GBR模型
+print("\n开始贝叶斯优化...")
+
+# 定义优化空间
+space = [
+    Integer(50, 500, name='n_estimators'),
+    Integer(3, 10, name='max_depth'),
+    Real(0.01, 0.2, prior='log-uniform', name='learning_rate'),
+    Integer(2, 10, name='min_samples_split'),
+    Integer(1, 5, name='min_samples_leaf')
+]
+
+@use_named_args(space)
+def objective(**params):
+    """贝叶斯优化的目标函数"""
+    gbr = GradientBoostingRegressor(
+        n_estimators=params['n_estimators'],
+        max_depth=params['max_depth'],
+        learning_rate=params['learning_rate'],
+        min_samples_split=params['min_samples_split'],
+        min_samples_leaf=params['min_samples_leaf'],
+        random_state=42
+    )
+    
+    # 5折交叉验证
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    scores = cross_val_score(gbr, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
+    
+    return -np.mean(scores)  # 返回负值，因为gp_minimize是最小化
+
+# 执行贝叶斯优化
+result = gp_minimize(objective, space, n_calls=60, random_state=42)
+best_n_estimators, best_max_depth, best_learning_rate, best_min_samples_split, best_min_samples_leaf = result.x
+
+print(f"最优参数: n_estimators={best_n_estimators}, max_depth={best_max_depth}, learning_rate={best_learning_rate:.4f}, min_samples_split={best_min_samples_split}, min_samples_leaf={best_min_samples_leaf}")
+print(f"最优交叉验证MSE: {result.fun:.4f}")
+
+# 3. 使用最优参数构建最终模型
+print("\n构建最终GBR模型...")
+best_gbr = GradientBoostingRegressor(
+    n_estimators=best_n_estimators,
+    max_depth=best_max_depth,
+    learning_rate=best_learning_rate,
+    min_samples_split=best_min_samples_split,
+    min_samples_leaf=best_min_samples_leaf,
+    random_state=42
+)
+best_gbr.fit(X_train, y_train)
+
+# 预测
+y_pred_train = best_gbr.predict(X_train)
+y_pred_test = best_gbr.predict(X_test)
+
+# 计算评估指标
+r2_train = r2_score(y_train, y_pred_train)
+r2_test = r2_score(y_test, y_pred_test)
+rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
+rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+print(f"\n模型性能评估:")
+print(f"训练集 R²: {r2_train:.4f}")
+print(f"测试集 R²: {r2_test:.4f}")
+print(f"训练集 RMSE: {rmse_train:.4f}")
+print(f"测试集 RMSE: {rmse_test:.4f}")
+
+# 4. 交叉验证评估
+print("\n进行交叉验证...")
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(best_gbr, X_train, y_train, cv=cv, scoring='r2')
+cv_rmse = np.sqrt(-cross_val_score(best_gbr, X_train, y_train, cv=cv, scoring='neg_mean_squared_error'))
+
+print(f"交叉验证 R² 均值: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+print(f"交叉验证 RMSE 均值: {cv_rmse.mean():.4f} ± {cv_rmse.std():.4f}")
+
+# 5. 绘制预测值vs真实值散点图
+print("\n绘制散点图...")
+fig, ax = plt.subplots(figsize=(6, 5))
+
+# 计算绘图范围
+all_values = np.concatenate([y_train.values, y_test.values, y_pred_train.ravel(), y_pred_test.ravel()])
+min_val = np.floor(all_values.min())
+max_val = np.ceil(all_values.max())
+
+# 绘制数据点
+ax.scatter(y_train, y_pred_train, c='#1E4C9C', label='Train data', edgecolor='black', s=50, alpha=1, zorder=1)
+ax.scatter(y_test, y_pred_test, c='#FCBB44', label='Test data', edgecolor='black', s=50, alpha=1, zorder=2)
+ax.plot([min_val, max_val], [min_val, max_val], linestyle='--', color='black', label='y=x', linewidth=1.5)
+
+# 设置轴范围和标签
+ax.set_xlim(min_val, max_val)
+ax.set_ylim(min_val, max_val)
+ax.set_xlabel('Experimental values (%)', fontweight='bold', labelpad=5)
+ax.set_ylabel('Predicted values (%)', fontweight='bold', labelpad=5)
+ax.set_title('GBR Regression', fontweight='bold', pad=5)
+
+# 添加图例和统计信息
+ax.legend(loc='best', fontsize=12)
+ax.text(0.05, 0.95, f'Test R² = {r2_test:.3f}\nTest RMSE = {rmse_test:.3f}',
+        transform=ax.transAxes, verticalalignment='top',
+        bbox=dict(facecolor='white', alpha=0.8))
+
+# 调整刻度和布局
+ax.tick_params(which='major', direction='out', length=3, width=1.5)
+ax.tick_params(which='minor', direction='out', length=3, width=1.5)
+plt.tight_layout()
+
+# 保存图片
+file_name = "2.3.3cm_GBR_Optimized.tiff"
+full_path = os.path.join(scatter_dir, file_name)
+fig.savefig(full_path, format='tiff', dpi=400, bbox_inches='tight', pad_inches=0.1)
+plt.show()
+
+##RFR
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import RandomForestRegressor  # 修改为随机森林回归
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.inspection import partial_dependence
+from skopt import gp_minimize
+from skopt.space import Real, Integer
+from skopt.utils import use_named_args
+import shap
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# 设置matplotlib参数
+plt.rcParams.update(plt.rcParamsDefault)
+plt.rcParams.update({
+    'font.family': 'Times New Roman',
+    'font.size': 16,
+    'font.weight': 'bold',
+    'text.usetex': False,
+    'mathtext.fontset': 'cm',
+    'mathtext.default': 'bf',
+    'axes.linewidth': 1.5,
+    'axes.grid': False,
+    'grid.alpha': 0.3,
+    'legend.frameon': False,
+    'legend.fontsize': 11
+})
+
+# 创建保存目录
+scatter_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\2.机器学习模型散点图"
+os.makedirs(scatter_dir, exist_ok=True)
+
+# 1. 数据加载和预处理
+print("正在加载数据...")
+data = pd.read_excel("2.3.3CuFe.xlsx")
+print(f"数据集形状: {data.shape}")
+
+# 分离特征和目标变量
+X = data.iloc[:, :-1]  # 前面所有列作为特征
+y = data.iloc[:, -1]   # 最后一列作为目标变量
+
+print(f"特征数量: {X.shape[1]}")
+print(f"样本数量: {X.shape[0]}")
+
+# 数据标准化
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+# 数据集划分
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
+
+# 2. 贝叶斯优化调优RFR模型
+print("\n开始贝叶斯优化...")
+
+# 定义优化空间
+space = [
+    Integer(30, 1000, name='n_estimators'),  # 调整迭代次数范围
+    Integer(3, 20, name='max_depth'),  # 扩大最大深度范围
+    Integer(2, 20, name='min_samples_split'),  # 调整最小分裂样本数
+    Integer(1, 10, name='min_samples_leaf'),  # 调整最小叶子样本数
+    Integer(1, 10, name='max_features')  # 新增最大特征数参数
+]
+
+@use_named_args(space)
+def objective(**params):
+    """贝叶斯优化的目标函数"""
+    rfr = RandomForestRegressor(
+        n_estimators=params['n_estimators'],
+        max_depth=params['max_depth'],
+        min_samples_split=params['min_samples_split'],
+        min_samples_leaf=params['min_samples_leaf'],
+        max_features=params['max_features'],
+        random_state=42,
+        n_jobs=-1  # 使用所有CPU核心
+    )
+    
+    # 5折交叉验证
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    scores = cross_val_score(rfr, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
+    
+    return -np.mean(scores)  # 返回负值，因为gp_minimize是最小化
+
+# 执行贝叶斯优化
+result = gp_minimize(objective, space, n_calls=80, random_state=42)  # 增加优化次数
+best_n_estimators, best_max_depth, best_min_samples_split, best_min_samples_leaf, best_max_features = result.x
+
+print(f"最优参数: n_estimators={best_n_estimators}, max_depth={best_max_depth}, min_samples_split={best_min_samples_split}, min_samples_leaf={best_min_samples_leaf}, max_features={best_max_features}")
+print(f"最优交叉验证MSE: {result.fun:.4f}")
+
+# 3. 使用最优参数构建最终模型
+print("\n构建最终RFR模型...")
+best_rfr = RandomForestRegressor(
+    n_estimators=best_n_estimators,
+    max_depth=best_max_depth,
+    min_samples_split=best_min_samples_split,
+    min_samples_leaf=best_min_samples_leaf,
+    max_features=best_max_features,
+    random_state=42,
+    n_jobs=-1
+)
+best_rfr.fit(X_train, y_train)
+
+# 预测
+y_pred_train = best_rfr.predict(X_train)
+y_pred_test = best_rfr.predict(X_test)
+
+# 计算评估指标
+r2_train = r2_score(y_train, y_pred_train)
+r2_test = r2_score(y_test, y_pred_test)
+rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
+rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+print(f"\n模型性能评估:")
+print(f"训练集 R²: {r2_train:.4f}")
+print(f"测试集 R²: {r2_test:.4f}")
+print(f"训练集 RMSE: {rmse_train:.4f}")
+print(f"测试集 RMSE: {rmse_test:.4f}")
+
+# 4. 交叉验证评估
+print("\n进行交叉验证...")
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(best_rfr, X_train, y_train, cv=cv, scoring='r2')
+cv_rmse = np.sqrt(-cross_val_score(best_rfr, X_train, y_train, cv=cv, scoring='neg_mean_squared_error'))
+
+print(f"交叉验证 R² 均值: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+print(f"交叉验证 RMSE 均值: {cv_rmse.mean():.4f} ± {cv_rmse.std():.4f}")
+
+# 5. 绘制预测值vs真实值散点图
+print("\n绘制散点图...")
+fig, ax = plt.subplots(figsize=(6, 5))
+
+# 计算绘图范围
+all_values = np.concatenate([y_train.values, y_test.values, y_pred_train.ravel(), y_pred_test.ravel()])
+min_val = np.floor(all_values.min())
+max_val = np.ceil(all_values.max())
+
+# 绘制数据点
+ax.scatter(y_train, y_pred_train, c='#1E4C9C', label='Train data', edgecolor='black', s=50, alpha=1, zorder=1)
+ax.scatter(y_test, y_pred_test, c='#FCBB44', label='Test data', edgecolor='black', s=50, alpha=1, zorder=2)
+ax.plot([min_val, max_val], [min_val, max_val], linestyle='--', color='black', label='y=x', linewidth=1.5)
+
+# 设置轴范围和标签
+ax.set_xlim(min_val, max_val)
+ax.set_ylim(min_val, max_val)
+ax.set_xlabel('Experimental values (%)', fontweight='bold', labelpad=5)
+ax.set_ylabel('Predicted values (%)', fontweight='bold', labelpad=5)
+ax.set_title('RFR Regression', fontweight='bold', pad=5)
+
+# 添加图例和统计信息
+ax.legend(loc='best', fontsize=12)
+ax.text(0.05, 0.95, f'Test R² = {r2_test:.3f}\nTest RMSE = {rmse_test:.3f}',
+        transform=ax.transAxes, verticalalignment='top',
+        bbox=dict(facecolor='white', alpha=0.8))
+
+# 调整刻度和布局
+ax.tick_params(which='major', direction='out', length=3, width=1.5)
+ax.tick_params(which='minor', direction='out', length=3, width=1.5)
+plt.tight_layout()
+
+# 保存图片
+file_name = "2.3.3cm_RFR_Optimized.tiff"
+full_path = os.path.join(scatter_dir, file_name)
+fig.savefig(full_path, format='tiff', dpi=400, bbox_inches='tight', pad_inches=0.1)
+plt.show()
+
+
+## XGBoost
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from xgboost import XGBRegressor
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.inspection import partial_dependence, permutation_importance
+from skopt import gp_minimize
+from skopt.space import Real, Integer, Categorical
+from skopt.utils import use_named_args
+import shap
+import os
+import warnings
+from itertools import product
+from scipy.stats import percentileofscore
+warnings.filterwarnings('ignore')
+
+# 设置matplotlib参数
+plt.rcParams.update(plt.rcParamsDefault)
+plt.rcParams.update({
+    'font.family': 'Times New Roman',
+    'font.size': 16,
+    'font.weight': 'bold',
+    'text.usetex': False,
+    'mathtext.fontset': 'cm',
+    'mathtext.default': 'bf',
+    'axes.linewidth': 1.5,
+    'axes.grid': False,
+    'grid.alpha': 0.3,
+    'legend.frameon': False,
+    'legend.fontsize': 11
+})
+
+# 创建保存目录
+scatter_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\2.机器学习模型散点图"
+os.makedirs(scatter_dir, exist_ok=True)
+
+# 1. 数据加载和预处理
+print("正在加载数据...")
+data = pd.read_excel("2.3.3CuFe.xlsx")
+print(f"数据集形状: {data.shape}")
+
+# 分离特征和目标变量
+X = data.iloc[:, :-1]  # 前面所有列作为特征
+y = data.iloc[:, -1]   # 最后一列作为目标变量
+
+print(f"特征数量: {X.shape[1]}")
+print(f"样本数量: {X.shape[0]}")
+
+# 数据标准化 (XGBoost不需要但保留用于一致性)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+# 数据集划分
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
+
+# 2. 贝叶斯优化调优XGBoost模型
+print("\n开始贝叶斯优化...")
+
+# 定义优化空间 (XGBoost参数)
+space = [
+    Integer(3, 10, name='max_depth'),  # 树的最大深度
+    Real(0.01, 1.0, prior='log-uniform', name='learning_rate'),  # 学习率
+    Real(0.1, 1.0, name='subsample'),  # 样本采样比例
+    Real(0.1, 1.0, name='colsample_bytree'),  # 特征采样比例
+    Integer(50, 500, name='n_estimators'),  # 树的数量
+    Real(0.1, 10.0, name='gamma'),  # 最小分裂损失减少
+    Real(1, 10, name='min_child_weight')  # 子节点最小权重和
+]
+
+@use_named_args(space)
+def objective(**params):
+    """贝叶斯优化的目标函数"""
+    xgb = XGBRegressor(
+        max_depth=params['max_depth'],
+        learning_rate=params['learning_rate'],
+        subsample=params['subsample'],
+        colsample_bytree=params['colsample_bytree'],
+        n_estimators=params['n_estimators'],
+        gamma=params['gamma'],
+        min_child_weight=params['min_child_weight'],
+        random_state=42,
+        n_jobs=-1
+    )
+    
+    # 5折交叉验证
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    scores = cross_val_score(xgb, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
+    
+    return -np.mean(scores)  # 返回负值，因为gp_minimize是最小化
+
+# 执行贝叶斯优化
+result = gp_minimize(objective, space, n_calls=80, random_state=42)
+best_params = {
+    'max_depth': result.x[0],
+    'learning_rate': result.x[1],
+    'subsample': result.x[2],
+    'colsample_bytree': result.x[3],
+    'n_estimators': result.x[4],
+    'gamma': result.x[5],
+    'min_child_weight': result.x[6]
+}
+
+print(f"最优参数: {best_params}")
+print(f"最优交叉验证MSE: {result.fun:.4f}")
+
+# 3. 使用最优参数构建最终模型
+print("\n构建最终XGBoost模型...")
+best_xgb = XGBRegressor(**best_params, random_state=42, n_jobs=-1)
+best_xgb.fit(X_train, y_train)
+
+# 预测
+y_pred_train = best_xgb.predict(X_train)
+y_pred_test = best_xgb.predict(X_test)
+
+# 计算评估指标
+r2_train = r2_score(y_train, y_pred_train)
+r2_test = r2_score(y_test, y_pred_test)
+rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
+rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+print(f"\n模型性能评估:")
+print(f"训练集 R²: {r2_train:.4f}")
+print(f"测试集 R²: {r2_test:.4f}")
+print(f"训练集 RMSE: {rmse_train:.4f}")
+print(f"测试集 RMSE: {rmse_test:.4f}")
+
+# 4. 交叉验证评估
+print("\n进行交叉验证...")
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(best_xgb, X_train, y_train, cv=cv, scoring='r2')
+cv_rmse = np.sqrt(-cross_val_score(best_xgb, X_train, y_train, cv=cv, scoring='neg_mean_squared_error'))
+
+print(f"交叉验证 R² 均值: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+print(f"交叉验证 RMSE 均值: {cv_rmse.mean():.4f} ± {cv_rmse.std():.4f}")
+
+# 5. 绘制预测值vs真实值散点图
+print("\n绘制散点图...")
+fig, ax = plt.subplots(figsize=(6, 5))
+
+# 计算绘图范围
+all_values = np.concatenate([y_train.values, y_test.values, y_pred_train.ravel(), y_pred_test.ravel()])
+min_val = np.floor(all_values.min())
+max_val = np.ceil(all_values.max())
+
+# 绘制数据点
+ax.scatter(y_train, y_pred_train, c='#1E4C9C', label='Train data', edgecolor='black', s=50, alpha=1, zorder=1)
+ax.scatter(y_test, y_pred_test, c='#FCBB44', label='Test data', edgecolor='black', s=50, alpha=1, zorder=2)
+ax.plot([min_val, max_val], [min_val, max_val], linestyle='--', color='black', label='y=x', linewidth=1.5)
+
+# 设置轴范围和标签
+ax.set_xlim(min_val, max_val)
+ax.set_ylim(min_val, max_val)
+ax.set_xlabel('Experimental values (%)', fontweight='bold', labelpad=5)
+ax.set_ylabel('Predicted values (%)', fontweight='bold', labelpad=5)
+ax.set_title('XGBoost Regression', fontweight='bold', pad=5)
+
+# 添加图例和统计信息
+ax.legend(loc='best', fontsize=12)
+ax.text(0.05, 0.95, f'Test R² = {r2_test:.3f}\nTest RMSE = {rmse_test:.3f}',
+        transform=ax.transAxes, verticalalignment='top',
+        bbox=dict(facecolor='white', alpha=0.8))
+
+# 调整刻度和布局
+ax.tick_params(which='major', direction='out', length=3, width=1.5)
+ax.tick_params(which='minor', direction='out', length=3, width=1.5)
+plt.tight_layout()
+
+# 保存图片
+file_name = "2.3.3cm_XGBoost_Optimized.tiff"
+full_path = os.path.join(scatter_dir, file_name)
+fig.savefig(full_path, format='tiff', dpi=400, bbox_inches='tight', pad_inches=0.1)
+plt.show()
+
+## ANN
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.neural_network import MLPRegressor  # 改为ANN模型
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.inspection import partial_dependence, permutation_importance  # 添加排列重要性
+from skopt import gp_minimize
+from skopt.space import Real, Integer, Categorical  # 添加分类空间
+from skopt.utils import use_named_args
+import shap
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# 设置matplotlib参数
+plt.rcParams.update(plt.rcParamsDefault)
+plt.rcParams.update({
+    'font.family': 'Times New Roman',
+    'font.size': 16,
+    'font.weight': 'bold',
+    'text.usetex': False,
+    'mathtext.fontset': 'cm',
+    'mathtext.default': 'bf',
+    'axes.linewidth': 1.5,
+    'axes.grid': False,
+    'grid.alpha': 0.3,
+    'legend.frameon': False,
+    'legend.fontsize': 11
+})
+
+# 创建保存目录
+scatter_dir = r"C:\Users\sci\1.WPT(C)\1.新文件\6.特征补充后的机器学习流程\2.机器学习模型散点图"
+os.makedirs(scatter_dir, exist_ok=True)
+
+# 1. 数据加载和预处理
+print("正在加载数据...")
+data = pd.read_excel("2.3.3CuFe.xlsx")
+print(f"数据集形状: {data.shape}")
+
+# 分离特征和目标变量
+X = data.iloc[:, :-1]  # 前面所有列作为特征
+y = data.iloc[:, -1]   # 最后一列作为目标变量
+
+print(f"特征数量: {X.shape[1]}")
+print(f"样本数量: {X.shape[0]}")
+
+# 数据标准化
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+# 数据集划分
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
+
+# 2. 贝叶斯优化调优ANN模型
+print("\n开始贝叶斯优化...")
+
+# 定义优化空间 (ANN参数)
+space = [
+    Integer(50, 300, name='hidden_layer_sizes'),  # 隐藏层神经元数量
+    Categorical(['relu', 'tanh', 'logistic'], name='activation'),  # 激活函数
+    Real(0.0001, 0.1, prior='log-uniform', name='learning_rate_init'),  # 学习率
+    Real(0.0001, 0.1, prior='log-uniform', name='alpha'),  # L2正则化
+    Integer(50, 300, name='max_iter')  # 最大迭代次数
+]
+
+@use_named_args(space)
+def objective(**params):
+    """贝叶斯优化的目标函数"""
+    ann = MLPRegressor(
+        hidden_layer_sizes=(params['hidden_layer_sizes'],),  # 单隐藏层
+        activation=params['activation'],
+        learning_rate_init=params['learning_rate_init'],
+        alpha=params['alpha'],
+        max_iter=params['max_iter'],
+        random_state=42,
+        early_stopping=True,  # 启用早停
+        n_iter_no_change=40,  # 20轮无改进则停止
+        solver='adam'  # 使用Adam优化器
+    )
+    
+    # 5折交叉验证
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    scores = cross_val_score(ann, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
+    
+    return -np.mean(scores)  # 返回负值，因为gp_minimize是最小化
+
+# 执行贝叶斯优化
+result = gp_minimize(objective, space, n_calls=60, random_state=42)
+best_hidden_size, best_activation, best_lr, best_alpha, best_max_iter = result.x
+
+print(f"最优参数: hidden_layer_sizes={best_hidden_size}, activation={best_activation}, "
+      f"learning_rate_init={best_lr:.6f}, alpha={best_alpha:.6f}, max_iter={best_max_iter}")
+print(f"最优交叉验证MSE: {result.fun:.4f}")
+
+# 3. 使用最优参数构建最终模型
+print("\n构建最终ANN模型...")
+best_ann = MLPRegressor(
+    hidden_layer_sizes=(best_hidden_size,),  # 单隐藏层
+    activation=best_activation,
+    learning_rate_init=best_lr,
+    alpha=best_alpha,
+    max_iter=best_max_iter,
+    random_state=42,
+    early_stopping=True,
+    n_iter_no_change=20,
+    solver='adam'
+)
+best_ann.fit(X_train, y_train)
+
+# 预测
+y_pred_train = best_ann.predict(X_train)
+y_pred_test = best_ann.predict(X_test)
+
+# 计算评估指标
+r2_train = r2_score(y_train, y_pred_train)
+r2_test = r2_score(y_test, y_pred_test)
+rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
+rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+print(f"\n模型性能评估:")
+print(f"训练集 R²: {r2_train:.4f}")
+print(f"测试集 R²: {r2_test:.4f}")
+print(f"训练集 RMSE: {rmse_train:.4f}")
+print(f"测试集 RMSE: {rmse_test:.4f}")
+
+# 4. 交叉验证评估
+print("\n进行交叉验证...")
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(best_ann, X_train, y_train, cv=cv, scoring='r2')
+cv_rmse = np.sqrt(-cross_val_score(best_ann, X_train, y_train, cv=cv, scoring='neg_mean_squared_error'))
+
+print(f"交叉验证 R² 均值: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+print(f"交叉验证 RMSE 均值: {cv_rmse.mean():.4f} ± {cv_rmse.std():.4f}")
+
+# 5. 绘制预测值vs真实值散点图
+print("\n绘制散点图...")
+fig, ax = plt.subplots(figsize=(6, 5))
+
+# 计算绘图范围
+all_values = np.concatenate([y_train.values, y_test.values, y_pred_train.ravel(), y_pred_test.ravel()])
+min_val = np.floor(all_values.min())
+max_val = np.ceil(all_values.max())
+
+# 绘制数据点
+ax.scatter(y_train, y_pred_train, c='#1E4C9C', label='Train data', edgecolor='black', s=50, alpha=1, zorder=1)
+ax.scatter(y_test, y_pred_test, c='#FCBB44', label='Test data', edgecolor='black', s=50, alpha=1, zorder=2)
+ax.plot([min_val, max_val], [min_val, max_val], linestyle='--', color='black', label='y=x', linewidth=1.5)
+
+# 设置轴范围和标签
+ax.set_xlim(min_val, max_val)
+ax.set_ylim(min_val, max_val)
+ax.set_xlabel('Experimental values (%)', fontweight='bold', labelpad=5)
+ax.set_ylabel('Predicted values (%)', fontweight='bold', labelpad=5)
+ax.set_title('ANN Regression', fontweight='bold', pad=5)  # 修改标题
+
+# 添加图例和统计信息
+ax.legend(loc='best', fontsize=12)
+ax.text(0.05, 0.95, f'Test R² = {r2_test:.3f}\nTest RMSE = {rmse_test:.3f}',
+        transform=ax.transAxes, verticalalignment='top',
+        bbox=dict(facecolor='white', alpha=0.8))
+
+# 调整刻度和布局
+ax.tick_params(which='major', direction='out', length=3, width=1.5)
+ax.tick_params(which='minor', direction='out', length=3, width=1.5)
+plt.tight_layout()
+
+# 保存图片
+file_name = "2.3.3cm_ANN_Optimized.tiff"  # 修改文件名
+full_path = os.path.join(scatter_dir, file_name)
+fig.savefig(full_path, format='tiff', dpi=400, bbox_inches='tight', pad_inches=0.1)
+plt.show()
+
